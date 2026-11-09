@@ -1,0 +1,10 @@
+{
+  "name": "TasteLocal Living - Planes que sienten contigo",
+  "description": "Una aplicación que recomienda experiencias locales basadas en tu estado de ánimo y nivel de energía, utilizando IA para generar planes personalizados.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
