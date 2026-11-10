@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { geocodeAddressProxy } from '../services/apiProxy';
 import SavedPlansModal from './SavedPlansModal';
+import PWAInstallButton from './PWAInstallButton';
 
 const POPULAR_CITIES = [
   { name: 'Madrid', lat: 40.4168, lng: -3.7038 },
@@ -194,6 +195,9 @@ const WelcomePage: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* PWA Install Button */}
+            <PWAInstallButton />
+
             {/* ❤️ Mis Planes Header Button */}
             <button
               type="button"

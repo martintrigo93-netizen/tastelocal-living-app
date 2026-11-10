@@ -7,6 +7,7 @@ import ResultsPage from './ResultsPage';
 import SavedPlansModal from './SavedPlansModal';
 import SharePlanModal from './SharePlanModal';
 import AudioNarrator from './AudioNarrator';
+import PWAInstallButton from './PWAInstallButton';
 import {
   type ScheduleItem,
   type ProposalPlan,
@@ -179,8 +180,11 @@ const ItineraryPage: React.FC = () => {
           )}
         </button>
 
-        {/* Header Right Actions: AudioNarrator, Saved Plans Modal Button & View Mode Toggle */}
+        {/* Header Right Actions: PWAInstall, AudioNarrator, Saved Plans Modal Button & View Mode Toggle */}
         <div className="flex items-center gap-2">
+          {/* PWA Install Button */}
+          <PWAInstallButton />
+
           {/* 🎧 Escuchar mi plan Audio-Guía */}
           <AudioNarrator
             title={activePlan.title}

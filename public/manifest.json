@@ -1,0 +1,54 @@
+{
+  "id": "/",
+  "name": "TasteLocal Living - Planes que sienten contigo",
+  "short_name": "TasteLocal",
+  "description": "Descubre planes hiperlocales y experiencias auténticas según tu estado de ánimo, meteorología y nivel de energía.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0F1015",
+  "theme_color": "#0F1015",
+  "categories": ["lifestyle", "travel", "food"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Sorpréndeme Ahora",
+      "short_name": "Sorpresa",
+      "description": "Acceso directo con 1-tap a un plan hiper-personalizado",
+      "url": "/?surprise=true",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}

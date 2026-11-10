@@ -8,9 +8,11 @@ import {
   RouteInfo,
 } from '../types';
 
+const BASE_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
 export async function geocodeAddressProxy(query: string): Promise<UserLocation | null> {
   try {
-    const res = await fetch('/api/places/geocode', {
+    const res = await fetch(`${BASE_API_URL}/api/places/geocode`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
@@ -28,7 +30,7 @@ export async function geocodeAddressProxy(query: string): Promise<UserLocation |
 }
 
 export async function analyzeMoodProxy(text: string): Promise<Mood> {
-  const res = await fetch('/api/gemini/analyze-mood', {
+  const res = await fetch(`${BASE_API_URL}/api/gemini/analyze-mood`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
@@ -46,7 +48,7 @@ export async function generateItineraryProxy(payload: {
   weather: WeatherInfo | null;
   places: Plan[];
 }): Promise<GeneratedItinerary> {
-  const res = await fetch('/api/gemini/generate-itinerary', {
+  const res = await fetch(`${BASE_API_URL}/api/gemini/generate-itinerary`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -59,7 +61,7 @@ export async function generateItineraryProxy(payload: {
 }
 
 export async function searchPlacesProxy(query: string, location: UserLocation): Promise<Plan[]> {
-  const res = await fetch('/api/places/search', {
+  const res = await fetch(`${BASE_API_URL}/api/places/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, location }),
@@ -74,7 +76,7 @@ export async function searchPlacesProxy(query: string, location: UserLocation): 
 
 export async function getWeatherProxy(location: UserLocation): Promise<WeatherInfo> {
   try {
-    const res = await fetch('/api/weather', {
+    const res = await fetch(`${BASE_API_URL}/api/weather`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ location }),
@@ -103,7 +105,7 @@ export async function computeRouteProxy(
   destination: UserLocation,
   travelMode: string
 ): Promise<RouteInfo> {
-  const res = await fetch('/api/routes/compute', {
+  const res = await fetch(`${BASE_API_URL}/api/routes/compute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ origin, destination, travelMode }),
