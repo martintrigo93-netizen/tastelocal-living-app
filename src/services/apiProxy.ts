@@ -48,30 +48,66 @@ export async function generateItineraryProxy(payload: {
   weather: WeatherInfo | null;
   places: Plan[];
 }): Promise<GeneratedItinerary> {
-  const res = await fetch(`${BASE_API_URL}/api/gemini/generate-itinerary`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const errData = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errData.error || 'No se pudo generar el itinerario');
+  try {
+    const res = await fetch(`${BASE_API_URL}/api/gemini/generate-itinerary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      return (await res.json()) as GeneratedItinerary;
+    }
+  } catch (err) {
+    console.warn('Initial generate itinerary endpoint attempt notice, trying /api/generate fallback:', err);
   }
-  return (await res.json()) as GeneratedItinerary;
+
+  // Fallback to /api/generate
+  try {
+    const fallbackRes = await fetch(`${BASE_API_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (fallbackRes.ok) {
+      return (await fallbackRes.json()) as GeneratedItinerary;
+    }
+  } catch (err2) {
+    console.warn('Fallback /api/generate route error:', err2);
+  }
+
+  throw new Error('No se pudo generar el itinerario en este momento. Por favor, inténtalo de nuevo.');
 }
 
 export async function searchPlacesProxy(query: string, location: UserLocation): Promise<Plan[]> {
-  const res = await fetch(`${BASE_API_URL}/api/places/search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, location }),
-  });
-  if (!res.ok) {
-    const errData = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errData.error || 'Error al buscar lugares');
+  try {
+    const res = await fetch(`${BASE_API_URL}/api/places/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, location }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { places?: Plan[] };
+      if (Array.isArray(data.places)) return data.places;
+    }
+  } catch (err) {
+    console.warn('Places search primary route notice, trying /api/places:', err);
   }
-  const data = (await res.json()) as { places?: Plan[] };
-  return data.places || [];
+
+  try {
+    const fallbackRes = await fetch(`${BASE_API_URL}/api/places`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, location }),
+    });
+    if (fallbackRes.ok) {
+      const data = (await fallbackRes.json()) as { places?: Plan[] };
+      return data.places || [];
+    }
+  } catch (err2) {
+    console.warn('Fallback /api/places route notice:', err2);
+  }
+
+  return [];
 }
 
 export async function getWeatherProxy(location: UserLocation): Promise<WeatherInfo> {
