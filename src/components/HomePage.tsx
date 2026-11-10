@@ -224,9 +224,12 @@ const HomePage: React.FC = () => {
       budget: selectedBudget ? `${selectedBudget.symbol} ${selectedBudget.label}` : '€€ Normal',
       mobility: activeMobility.label,
       availableTime: availableTime || '2-4h',
+      cityName: userLocation.cityName,
       location: {
         lat: userLocation.lat,
         lng: userLocation.lng,
+        cityName: userLocation.cityName,
+        formattedAddress: userLocation.formattedAddress,
       },
       intensity: intensity,
       ...(moodDescription.trim() && { user_mood_description: moodDescription.trim() }),
@@ -272,17 +275,26 @@ const HomePage: React.FC = () => {
           </button>
 
           {userLocation && (
-            <button
-              type="button"
-              onClick={() => setUserLocation(null)}
-              className="text-[11px] font-medium text-gray-300 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 px-3 py-1.5 rounded-full transition flex items-center gap-1.5 cursor-pointer"
-              title="Cambiar municipio o ciudad"
-            >
-              <svg className="w-3 h-3 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              </svg>
-              <span>Cambiar ciudad</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#FF5E2B]/10 border border-[#FF5E2B]/20 text-[11px] text-gray-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#FF5E2B] animate-pulse"></span>
+                <span className="font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
+                  {userLocation.cityName || userLocation.formattedAddress || 'Ubicación'}
+                </span>
+                <span className="text-[10px] text-[#FF5E2B] font-mono hidden sm:inline">&le; 5 km</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUserLocation(null)}
+                className="text-[11px] font-medium text-gray-300 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 px-2.5 py-1 rounded-full transition flex items-center gap-1 cursor-pointer"
+                title="Cambiar municipio o ciudad"
+              >
+                <svg className="w-3 h-3 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                </svg>
+                <span>Cambiar</span>
+              </button>
+            </div>
           )}
         </div>
       </header>
@@ -422,7 +434,7 @@ const HomePage: React.FC = () => {
             </h2>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
             {ENTORNO_OPTIONS.map((opt) => {
               const isSelected = selectedEntorno?.label === opt.label;
 
@@ -431,7 +443,7 @@ const HomePage: React.FC = () => {
                   key={opt.label}
                   type="button"
                   onClick={() => setFormState({ entorno: opt })}
-                  className={`py-3.5 px-3 rounded-2xl border text-center transition-all duration-200 cursor-pointer flex flex-col items-center justify-center gap-1.5 relative ${
+                  className={`py-3.5 px-2 rounded-2xl border text-center transition-all duration-200 cursor-pointer flex flex-col items-center justify-center gap-1.5 relative ${
                     isSelected
                       ? 'bg-[#FF5E2B]/15 border-[#FF5E2B] text-white font-bold shadow-[0_0_18px_rgba(255,94,43,0.25)] scale-[1.02]'
                       : 'bg-white/[0.03] border-white/[0.08] text-gray-300 hover:border-white/20 hover:bg-white/[0.06]'
@@ -442,6 +454,24 @@ const HomePage: React.FC = () => {
                 </button>
               );
             })}
+          </div>
+
+          {/* Micro-badge de Geofencing Estricto */}
+          <div className="p-3 rounded-2xl bg-white/[0.02] border border-white/[0.07] flex items-start gap-2.5 text-xs text-gray-300">
+            <span className="text-base flex-shrink-0 mt-0.5">
+              {selectedEntorno?.label === 'Escapada' ? '🚗' : '📍'}
+            </span>
+            <div className="leading-snug">
+              {selectedEntorno?.label === 'Escapada' ? (
+                <span>
+                  <strong className="text-white font-bold">Modo Escapada activo:</strong> Se explorarán parajes y localidades en los alrededores de {userLocation?.cityName || 'tu ubicación'}.
+                </span>
+              ) : (
+                <span>
+                  <strong className="text-white font-bold">Hiperlocalización estricta &le; 5 km:</strong> Todas las propuestas (gastronomía, cultura, naturaleza) se ubican rigurosamente en {userLocation?.cityName || 'el municipio'} sin salir de sus límites.
+                </span>
+              )}
+            </div>
           </div>
         </section>
 

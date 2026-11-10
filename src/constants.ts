@@ -31,6 +31,7 @@ export const ENTORNO_OPTIONS: EntornoOption[] = [
   { label: 'Ciudad', icon: '🏙️' },
   { label: 'Río', icon: '🛶' },
   { label: 'Pueblo', icon: '🏡' },
+  { label: 'Escapada', icon: '🚗' },
 ];
 
 export const COMPANY_OPTIONS: Company[] = [

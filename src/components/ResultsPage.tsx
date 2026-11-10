@@ -111,8 +111,14 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
           <h2 className="text-xl md:text-2xl font-black text-white tracking-tight">
             Tus 3 Propuestas a Medida
           </h2>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Tres enfoques independientes trazados con lugares reales de la zona.
+          <p className="text-xs text-gray-400 mt-0.5 flex flex-wrap items-center gap-1.5">
+            <span>Tres enfoques trazados estrictamente en</span>
+            <span className="text-[#FF5E2B] font-semibold">
+              {searchCriteria?.cityName || searchCriteria?.location?.cityName || 'tu zona'}
+            </span>
+            <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-gray-300 border border-white/10 font-mono">
+              {searchCriteria?.environment === 'Escapada' ? '🚗 Modo Escapada' : '📍 Radio local ≤ 5 km'}
+            </span>
           </p>
         </div>
 

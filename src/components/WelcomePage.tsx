@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { geocodeAddressProxy } from '../services/apiProxy';
+import { UserLocation } from '../types';
 import SavedPlansModal from './SavedPlansModal';
 import PWAInstallButton from './PWAInstallButton';
 
@@ -24,9 +25,11 @@ const WelcomePage: React.FC = () => {
   const [customQuery, setCustomQuery] = useState<string>('');
   const [status, setStatus] = useState<'idle' | 'locating' | 'geocoding' | 'error'>('idle');
   const [feedbackMessage, setFeedbackMessage] = useState<string>('');
-  const [detectedCoords, setDetectedCoords] = useState<{ lat: number; lng: number } | null>({
+  const [detectedCoords, setDetectedCoords] = useState<UserLocation | null>({
     lat: 40.4168,
     lng: -3.7038,
+    cityName: 'Madrid',
+    formattedAddress: 'Madrid',
   });
 
   // Botón directo "⚡ Sorpréndeme Ahora (1 Tap)"
@@ -123,7 +126,7 @@ const WelcomePage: React.FC = () => {
   const handleSelectCityChip = (city: typeof POPULAR_CITIES[number]) => {
     setSelectedCityName(city.name);
     setCustomQuery('');
-    setDetectedCoords({ lat: city.lat, lng: city.lng });
+    setDetectedCoords({ lat: city.lat, lng: city.lng, cityName: city.name, formattedAddress: city.name });
     setFeedbackMessage('');
   };
 
@@ -140,7 +143,11 @@ const WelcomePage: React.FC = () => {
       try {
         const location = await geocodeAddressProxy(query);
         if (location && typeof location.lat === 'number' && typeof location.lng === 'number') {
-          setUserLocation(location);
+          setUserLocation({
+            ...location,
+            cityName: query,
+            formattedAddress: location.formattedAddress || query,
+          });
           return;
         }
       } catch (err) {
@@ -152,7 +159,12 @@ const WelcomePage: React.FC = () => {
         (c) => c.name.toLowerCase() === query.toLowerCase()
       );
       if (matched) {
-        setUserLocation({ lat: matched.lat, lng: matched.lng });
+        setUserLocation({
+          lat: matched.lat,
+          lng: matched.lng,
+          cityName: matched.name,
+          formattedAddress: matched.name,
+        });
         return;
       }
 
@@ -160,19 +172,22 @@ const WelcomePage: React.FC = () => {
       setFeedbackMessage(`No encontramos "${query}". Te conectamos con experiencias en Madrid.`);
       setStatus('error');
       setTimeout(() => {
-        setUserLocation({ lat: 40.4168, lng: -3.7038 });
+        setUserLocation({ lat: 40.4168, lng: -3.7038, cityName: 'Madrid', formattedAddress: 'Madrid' });
       }, 1200);
       return;
     }
 
     // 2. Si ya hay una ubicación detectada o seleccionada
     if (detectedCoords) {
-      setUserLocation(detectedCoords);
+      setUserLocation({
+        ...detectedCoords,
+        cityName: detectedCoords.cityName || selectedCityName || 'Madrid',
+      });
       return;
     }
 
     // 3. Fallback predeterminado a Madrid
-    setUserLocation({ lat: 40.4168, lng: -3.7038 });
+    setUserLocation({ lat: 40.4168, lng: -3.7038, cityName: 'Madrid', formattedAddress: 'Madrid' });
   };
 
   return (

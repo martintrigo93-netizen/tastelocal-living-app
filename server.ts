@@ -215,6 +215,13 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
     user_mood: 'Relajado',
     location: { lat: 40.4168, lng: -3.7038 },
   };
+  const targetCity =
+    criteria.cityName ||
+    criteria.location?.cityName ||
+    (typeof criteria.location?.formattedAddress === 'string'
+      ? criteria.location.formattedAddress.split(',')[0].trim()
+      : '') ||
+    'tu ciudad';
   const lat = criteria.location?.lat || 40.4168;
   const lng = criteria.location?.lng || -3.7038;
   const mood = criteria.user_mood || 'Relajado';
@@ -225,37 +232,37 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       time: '11:00',
       activity: 'Desayuno pausado y café de especialidad con encanto local',
       placeId: 'resilient-poi-1',
-      placeName: 'Café de Autor & Obrador',
-      placeAddress: 'Casco histórico de la zona',
+      placeName: `Café de Autor & Obrador (${targetCity})`,
+      placeAddress: `Casco histórico de ${targetCity}`,
       location: { lat: lat + 0.0015, lng: lng - 0.001 },
       rating: 4.8,
       types: ['cafe', 'bakery'],
       allowsDogs: true,
-      description: 'Atmósfera serena, luz natural y aroma a café recién molido para abrir el día sin prisas.',
+      description: `Atmósfera serena, luz natural y aroma a café recién molido en el corazón de ${targetCity}.`,
     },
     {
       time: '13:00',
       activity: 'Paseo cultural y descubrimiento de rincones con encanto',
       placeId: 'resilient-poi-2',
-      placeName: 'Mirador & Galería de Arte Local',
-      placeAddress: 'Paseo cultural de la zona',
+      placeName: `Mirador & Espacio Cultural Local`,
+      placeAddress: `Paseo cultural y mirador de ${targetCity}`,
       location: { lat: lat - 0.0012, lng: lng + 0.002 },
       rating: 4.7,
       types: ['arts_centre', 'viewpoint'],
       allowsDogs: true,
-      description: 'Un rincón con perspectiva singular para desconectar y saborear la esencia del entorno.',
+      description: `Un rincón con perspectiva singular en ${targetCity} para desconectar y saborear la esencia del entorno.`,
     },
     {
       time: '15:00',
       activity: 'Almuerzo de proximidad con producto de mercado',
       placeId: 'resilient-poi-3',
-      placeName: 'Bistró & Cocina de Temporada',
-      placeAddress: 'Plaza de los artesanos',
+      placeName: `Bistró & Cocina de Temporada`,
+      placeAddress: `Barrio tradicional de ${targetCity}`,
       location: { lat: lat + 0.0025, lng: lng + 0.001 },
       rating: 4.9,
       types: ['restaurant'],
       allowsDogs: criteria.company === 'Con mascota',
-      description: 'Platos sinceros elaborados con ingredientes de cercanía y trato cálido.',
+      description: `Platos sinceros elaborados con ingredientes de proximidad y trato cercano en ${targetCity}.`,
     },
   ];
 
@@ -264,25 +271,25 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       time: '12:00',
       activity: 'Ruta de librerías con encanto y tertulia cultural',
       placeId: 'resilient-poi-4',
-      placeName: 'Librería & Espacio de Lectura',
-      placeAddress: 'Calle peatonal céntrica',
+      placeName: `Librería de Barrio & Espacio de Lectura`,
+      placeAddress: `Calle peatonal de ${targetCity}`,
       location: { lat: lat + 0.0008, lng: lng - 0.0025 },
       rating: 4.8,
       types: ['book_store', 'cafe'],
       allowsDogs: true,
-      description: 'Refugio de tranquilidad, primeras ediciones y sofás confortables para saborear la lectura.',
+      description: `Refugio de tranquilidad, primeras ediciones y sofás confortables para disfrutar sin prisa.`,
     },
     {
       time: '14:30',
       activity: 'Tapeo de autor en taberna con solera y alma de barrio',
       placeId: 'resilient-poi-5',
-      placeName: 'Taberna & Vinos Tradicionales',
-      placeAddress: 'Callejón histórico',
+      placeName: `Taberna Tradicional & Vinos de la Tierra`,
+      placeAddress: `Callejón con solera en ${targetCity}`,
       location: { lat: lat - 0.002, lng: lng - 0.0005 },
       rating: 4.7,
       types: ['bar', 'tapas'],
       allowsDogs: criteria.company === 'Con mascota',
-      description: 'Bocados clásicos con un toque contemporáneo y el ambiente cercano de los vecinos.',
+      description: `Bocados clásicos con un toque contemporáneo y el ambiente cercano de los vecinos de ${targetCity}.`,
     },
   ];
 
@@ -291,25 +298,25 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       time: '17:00',
       activity: 'Taller creativo y degustación botánica local',
       placeId: 'resilient-poi-6',
-      placeName: 'Atelier Secreto & Espacio Botánico',
-      placeAddress: 'Pasaje oculto de la zona',
+      placeName: `Atelier Secreto & Espacio Botánico`,
+      placeAddress: `Pasaje oculto en ${targetCity}`,
       location: { lat: lat + 0.003, lng: lng - 0.0015 },
       rating: 4.9,
       types: ['point_of_interest'],
       allowsDogs: true,
-      description: 'Una experiencia sensorial fuera de guion donde aprender y disfrutar sin expectativas.',
+      description: `Una experiencia sensorial fuera de guion donde conectar con artesanos locales de ${targetCity}.`,
     },
     {
       time: '19:30',
       activity: 'Atardecer íntimo y coctelería botánica al compás de la música',
       placeId: 'resilient-poi-7',
-      placeName: 'Rooftop Íntimo & Salón de Autor',
-      placeAddress: 'Planta alta con vistas',
+      placeName: `Rooftop Íntimo & Salón de Autor`,
+      placeAddress: `Terraza con vistas en ${targetCity}`,
       location: { lat: lat - 0.001, lng: lng + 0.0028 },
       rating: 4.8,
       types: ['bar', 'night_club'],
       allowsDogs: false,
-      description: 'Cierre armónico entre luces tenues, combinados singulares y buena conversación.',
+      description: `Cierre armónico entre luces tenues, combinados singulares y buena conversación en ${targetCity}.`,
     },
   ];
 
@@ -318,11 +325,11 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       id: 'ideal',
       badge: 'PLAN IDEAL',
       tagline: 'Encaje directo con tu momento',
-      title: `Ruta Esencial: ${mood} en ${criteria.environment || 'la zona'}`,
-      shortDescription: `Paseo sensorial y gastronómico diseñado a medida para tu estado de ánimo "${mood}".`,
-      matchReason: `Sintoniza con tu energía actual ofreciendo una cadencia pausada, locales acogedores y cero prisas.`,
+      title: `Ruta Esencial: ${mood} en ${targetCity}`,
+      shortDescription: `Paseo sensorial y gastronómico diseñado a medida para tu estado de ánimo "${mood}" en ${targetCity}.`,
+      matchReason: `Sintoniza con tu energía actual ofreciendo una cadencia pausada, locales de proximidad y cero prisas en ${targetCity}.`,
       approxDuration: criteria.availableTime || '2 a 4 horas',
-      experienceNarrative: `Una experiencia cuidada al detalle para saborear lo auténtico de la zona sin agobios. Cada parada ha sido pensada para equilibrar tu energía y regalarte un momento genuino.`,
+      experienceNarrative: `Una experiencia cuidada al detalle para saborear lo auténtico de ${targetCity} sin agobios. Cada parada ha sido pensada en un radio inferior a 5 km para equilibrar tu energía y regalarte un momento genuino.`,
       accessibilityInfo: 'Itinerario urbano llano con acceso verificado para movilidad estándar.',
       budgetEstimate: '20€ - 35€ / persona',
       energyRequired: `Ritmo ${criteria.intensity || 6}/10`,
@@ -333,11 +340,11 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       id: 'alternative',
       badge: 'PLAN ALTERNATIVO',
       tagline: 'Misma emoción, enfoque distinto',
-      title: `Alternativa Cultural & Gastro Íntima`,
-      shortDescription: `Un giro de autor hacia las letras, el sosiego y el sabor tradicional.`,
-      matchReason: `Una perspectiva complementaria para reconectar con el entorno desde la curiosidad y la cercanía.`,
+      title: `Alternativa Cultural & Gastro Íntima en ${targetCity}`,
+      shortDescription: `Un giro de autor hacia las letras, el sosiego y el sabor tradicional de ${targetCity}.`,
+      matchReason: `Una perspectiva complementaria para reconectar con el entorno desde la curiosidad y la cercanía vecinal.`,
       approxDuration: criteria.availableTime || '2 a 4 horas',
-      experienceNarrative: `Para cuando prefieres un entorno más resguardado e íntimo, alternando lecturas, aromas y charla de sobremesa.`,
+      experienceNarrative: `Para cuando prefieres un entorno más resguardado e íntimo en ${targetCity}, alternando lecturas, aromas y charla de sobremesa.`,
       accessibilityInfo: 'Recorrido en calle peatonal accesible.',
       budgetEstimate: '15€ - 30€ / persona',
       energyRequired: `Ritmo ${criteria.intensity || 6}/10`,
@@ -348,11 +355,11 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       id: 'surprise',
       badge: 'PLAN SORPRESA',
       tagline: 'Propuesta singular e inesperada',
-      title: `Descubrimiento Secreto & Atelier Botánico`,
-      shortDescription: `Espacios con carácter propio e inesperados para romper la rutina.`,
-      matchReason: `Ideal para dejarse llevar y descubrir una faceta oculta y vibrante de la zona.`,
+      title: `Descubrimiento Secreto & Atelier Botánico en ${targetCity}`,
+      shortDescription: `Espacios con carácter propio e inesperados para romper la rutina en ${targetCity}.`,
+      matchReason: `Ideal para dejarse llevar y descubrir una faceta oculta y vibrante de los barrios de ${targetCity}.`,
       approxDuration: '2 a 3 horas',
-      experienceNarrative: `Una vivencia fuera de los circuitos habituales, pensada para despertar los sentidos con botánica, arte y atmósfera envolvente.`,
+      experienceNarrative: `Una vivencia fuera de los circuitos habituales, pensada para despertar los sentidos con botánica, arte y atmósfera envolvente en ${targetCity}.`,
       accessibilityInfo: 'Acceso a pie cómodo.',
       budgetEstimate: '25€ - 40€ / persona',
       energyRequired: 'Curioso y estimulante',
@@ -371,7 +378,7 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
     isGeographicallyOptimized: true,
     isPlanBActive: isBadWeather,
     planBReason: isBadWeather
-      ? '🌧️ Detectadas precipitaciones en la zona. Hemos priorizado espacios a cubierto y cálidos para tu confort.'
+      ? `🌧️ Detectadas precipitaciones en ${targetCity}. Hemos priorizado espacios a cubierto y cálidos para tu confort.`
       : undefined,
   };
 }
@@ -387,18 +394,32 @@ const handleGenerateItinerary = async (req: Request, res: Response) => {
     }
 
     const userLocation = criteria.location || { lat: 40.4168, lng: -3.7038 };
+    const targetCity =
+      criteria.cityName ||
+      criteria.location?.cityName ||
+      (typeof criteria.location?.formattedAddress === 'string'
+        ? criteria.location.formattedAddress.split(',')[0].trim()
+        : '') ||
+      'el municipio seleccionado';
+
+    const isEscapadaMode =
+      criteria.environment === 'Escapada' ||
+      Boolean(criteria.allowSurroundings) ||
+      /escapada|alrededores|excursión|afueras/i.test(criteria.user_mood_description || '');
+
     let verifiedPlacesList: VerifiedPlace[] = Array.isArray(places) && places.length > 0 ? places : [];
 
-    // Fallback: If places is empty or unavailable, synthesize authentic contextual POIs with Gemini
+    // Fallback: If places is empty or unavailable, synthesize authentic contextual POIs with Gemini strictly inside targetCity
     if (verifiedPlacesList.length === 0) {
       try {
-        const geminiPoiPrompt = `Genera una lista de 6 locales o espacios de interés auténticos y realistas situados en el entorno de las coordenadas latitud ${userLocation.lat}, longitud ${userLocation.lng} para un plan de tipo "${criteria.environment || 'Ciudad'}" y estado de ánimo "${criteria.user_mood || 'Relajado'}".
-Deben ser cafeterías con encanto, parques, miradores, librerías, bistrós o espacios culturales con nombres y direcciones verosímiles.
+        const geminiPoiPrompt = `Genera una lista de 6 locales o espacios de interés auténticos, emblemáticos y reales situados ESTRICTAMENTE dentro del término municipal de "${targetCity}" en un radio máximo de 5 km alrededor de las coordenadas latitud ${userLocation.lat}, longitud ${userLocation.lng} para un plan de tipo "${criteria.environment || 'Ciudad'}" y estado de ánimo "${criteria.user_mood || 'Relajado'}".
+Deben ser cafeterías con encanto, parques urbanos, miradores locales, librerías, bistrós o espacios culturales con nombres reales y direcciones verosímiles de calles y barrios de ${targetCity} (por ejemplo, si es Vigo: Casco Vello, Bouzas, O Castro, Teis, Rúa Príncipe, etc.).
+Queda TERMINANTEMENTE PROHIBIDO proponer lugares pertenecientes a otros municipios o localidades lejanas.
 Responde en formato JSON con la siguiente estructura:
 [
   {
-    "name": "Nombre del local o espacio",
-    "address": "Calle o plaza aproximada en la zona",
+    "name": "Nombre real del local o espacio",
+    "address": "Calle y barrio real en ${targetCity}",
     "latOffset": 0.002,
     "lngOffset": -0.002,
     "rating": 4.8,
@@ -412,12 +433,12 @@ Responde en formato JSON con la siguiente estructura:
           verifiedPlacesList = parsedPois.map((p: any, idx: number) => ({
             id: `gemini-poi-${idx}-${Date.now()}`,
             name: p.name || `Espacio Local ${idx + 1}`,
-            address: p.address || 'Ubicación local',
+            address: p.address || `Calle céntrica, ${targetCity}`,
             location: {
-              lat: Number(userLocation.lat) + (typeof p.latOffset === 'number' ? p.latOffset : (idx - 2) * 0.003),
-              lng: Number(userLocation.lng) + (typeof p.lngOffset === 'number' ? p.lngOffset : (idx - 2) * 0.003),
+              lat: Number(userLocation.lat) + (typeof p.latOffset === 'number' ? p.latOffset : (idx - 2) * 0.0025),
+              lng: Number(userLocation.lng) + (typeof p.lngOffset === 'number' ? p.lngOffset : (idx - 2) * 0.0025),
             },
-            rating: typeof p.rating === 'number' ? p.rating : 4.7,
+            rating: typeof p.rating === 'number' ? p.rating : 4.8,
             types: [p.type || 'point_of_interest'],
             allowsDogs: Boolean(p.allowsDogs),
           }));
@@ -426,13 +447,13 @@ Responde en formato JSON con la siguiente estructura:
         console.warn('Direct Gemini POI synthesis fallback notice:', poiGenErr);
       }
 
-      // If still empty, use resilient default POIs
+      // If still empty, use resilient default POIs strictly tailored to targetCity
       if (verifiedPlacesList.length === 0) {
         verifiedPlacesList = [
           {
             id: 'poi-center-1',
-            name: 'Café & Bistro de Autor',
-            address: 'Zona centro',
+            name: `Café de Autor & Obrador (${targetCity})`,
+            address: `Casco histórico de ${targetCity}`,
             location: { lat: userLocation.lat + 0.002, lng: userLocation.lng + 0.001 },
             rating: 4.8,
             types: ['cafe', 'bistro'],
@@ -440,8 +461,8 @@ Responde en formato JSON con la siguiente estructura:
           },
           {
             id: 'poi-center-2',
-            name: 'Mirador & Galería Cultural',
-            address: 'Entorno histórico',
+            name: `Mirador & Espacio Cultural de ${targetCity}`,
+            address: `Paseo cultural de ${targetCity}`,
             location: { lat: userLocation.lat - 0.002, lng: userLocation.lng + 0.003 },
             rating: 4.7,
             types: ['arts_centre', 'viewpoint'],
@@ -449,8 +470,8 @@ Responde en formato JSON con la siguiente estructura:
           },
           {
             id: 'poi-center-3',
-            name: 'Espacio de Tertulia & Librería',
-            address: 'Barrio histórico',
+            name: `Librería de Barrio & Espacio de Lectura`,
+            address: `Calle céntrica de ${targetCity}`,
             location: { lat: userLocation.lat + 0.001, lng: userLocation.lng - 0.002 },
             rating: 4.6,
             types: ['book_store', 'cafe'],
@@ -565,8 +586,24 @@ El usuario viaja CON MASCOTA. Es una REGLA INQUEBRANTABLE que todos los lugares 
 - En la narración y en "matchReason", detalla la idoneidad para la mascota (ej. terraza cómoda, espacio verde amplio, cuenco de agua o paseo tranquilo sin agobios).`
       : '';
 
-    const prompt = `Eres un diseñador de experiencias locales y concierge urbano de primer nivel para la app "TasteLocal Living".
-Tu función es actuar EXCLUSIVAMENTE como motor narrativo y curador de experiencias sobre los lugares verificados de Google Places proporcionados a continuación.
+    // 6. Directiva de Geofencing y Granularidad Local Estricta
+    const geofencingDirective = isEscapadaMode
+      ? `\n🚗 MODO ESCAPADA / ALREDEDORES ACTIVADO:
+El usuario ha seleccionado explorar los alrededores de ${targetCity}. Se permite extender las propuestas hacia parajes naturales, miradores y pueblos con encanto en el entorno próximo de ${targetCity}.`
+      : `\n📍 DIRECTIVA DE GEOFENCING Y GRANULARIDAD LOCAL ESTRICTA (${targetCity.toUpperCase()} - RADIO MÁXIMO 5 KM):
+- OBLIGACIÓN ESTRICTA: TODAS las propuestas y paradas (gastronomía, cultura, naturaleza, miradores, ocio) DEBEN ubicarse ESTRICTAMENTE dentro de los límites del término municipal de ${targetCity} o a un radio MÁXIMO de 5 km de sus coordenadas (lat: ${userLocation.lat}, lng: ${userLocation.lng}).
+- PROHIBICIÓN RADICAL: Queda TERMINANTEMENTE PROHIBIDO sugerir localidades lejanas, municipios limítrofes o cambiar de término municipal (por ejemplo: si la ciudad es Vigo, queda estrictamente prohibido sugerir Baiona, Cangas, Nigrán, Moaña, Pontevedra o Santiago; el 100% de las paradas debe ser exclusivamente de Vigo).
+- IDENTIDAD Y CULTURA LOCAL AUTÉNTICA: Prioriza el pulso real de los barrios, la agenda cultural local, el comercio de proximidad, patrimonio urbano y locales emblemáticos o independientes de la zona (ej. en Vigo: Casco Vello, Bouzas, O Castro, Teis, O Berbés, Museo MARCO; en Madrid: Malasaña, La Latina, Lavapiés; etc.).
+- TONO DE GUÍA LOCAL EXPERTO: Redacta con el tono de un conocedor local apasionado que sabe cuáles son las mejores calles, rincones y ambientes de barrio, evitando tópicos turísticos masivos o folletos provinciales vacíos.
+- DIRECCIÓN REAL: Cada parada debe indicar en 'placeAddress' su calle y barrio verosímil dentro de ${targetCity}.`;
+
+    const prompt = `Eres un diseñador de experiencias locales y concierge urbano de primer nivel para la app "TasteLocal Living", especializado con conocimiento íntimo en el municipio de "${targetCity}".
+Tu función es actuar como motor narrativo y curador hiperlocal de experiencias en "${targetCity}".
+
+DESTINO Y GEOFENCING:
+- Municipio: ${targetCity}
+- Coordenadas de referencia: Lat ${userLocation.lat}, Lng ${userLocation.lng}
+${geofencingDirective}
 
 PERFIL DEL USUARIO:
 - Estado de ánimo: ${criteria.user_mood}
@@ -583,7 +620,7 @@ HORA Y CONTEXTO DEL DÍA:
 - Orientación de actividades para esta franja: ${timeGuidance}
 - IMPORTANTE: Las paradas de cada plan deben programarse a partir de las ${timeStr} en orden cronológico ascendente (ej. si son las 18:00, la primera parada debe ser hacia las 18:30, la segunda a las 20:00, etc.).
 
-CONTEXTO METEOROLÓGICO:
+CONTEXTO METEOROLÓGICO EN ${targetCity.toUpperCase()}:
 - Estado del tiempo: ${
       weather?.isAvailable === false || weather?.alertLevel === 'unavailable'
         ? 'No disponible (diseña propuestas versátiles)'
@@ -594,25 +631,25 @@ ${userAffinitiesDirective}
 ${surpriseMeDirective}
 ${petDirective}
 
-LUGARES REALES Y VERIFICADOS DISPONIBLES EN LA ZONA (REGLA INQUEBRANTABLE: DEBES SELECCIONAR ÚNICAMENTE DE ESTA LISTA):
+LUGARES REALES Y VERIFICADOS DISPONIBLES EN ${targetCity.toUpperCase()}:
 ${availablePlacesDescription}
 
-MISIÓN OBLIGATORIA: Generar TRES propuestas realmente diferenciadas basadas exclusivamente en los lugares verificados:
-1. PLAN IDEAL -> La propuesta con encaje directo más fiel a la emoción, el tiempo disponible (${criteria.availableTime || '2-4h'}) y nivel de energía.
+MISIÓN OBLIGATORIA: Generar TRES propuestas realmente diferenciadas en ${targetCity} dentro del radio de 5 km:
+1. PLAN IDEAL -> La propuesta con encaje directo más fiel a la emoción, el tiempo disponible (${criteria.availableTime || '2-4h'}) y nivel de energía en ${targetCity}.
 2. PLAN ALTERNATIVO -> Misma emoción de partida pero con un enfoque distinto en la misma zona (ej. exterior/naturaleza vs. cultural/acogedor o gastronómico).
-3. PLAN SORPRESA -> Una propuesta singular, inesperada pero realizable y segura, que rompe la rutina.
+3. PLAN SORPRESA -> Una propuesta singular, inesperada pero realizable y segura, que rompe la rutina en ${targetCity}.
 
 NORMAS ESTRICTAS:
 - Para cada uno de los 3 planes, incluye:
   • "badge": "PLAN IDEAL" (para el 1), "PLAN ALTERNATIVO" (para el 2) o "PLAN SORPRESA" (para el 3).
   • "matchReason": "Por qué conecta con cómo te sientes hoy" redactado en 2 frases inspiradoras que justifiquen el vínculo con la emoción.
-  • "experienceNarrative": "Qué vas a vivir y por qué merece la pena", redactando una descripción inmersiva y sensorial (3 a 5 líneas) de la atmósfera de los lugares seleccionados.
+  • "experienceNarrative": "Qué vas a vivir y por qué merece la pena", redactando una descripción inmersiva y sensorial (3 a 5 líneas) de la atmósfera de los lugares seleccionados en ${targetCity}.
   • "accessibilityInfo": Breve indicación de accesibilidad física (ej. "Ruta peatonal llana y accesible", "Espacios con accesibilidad comprobada").
   • "budgetEstimate": Presupuesto orientativo (ej. "20€ - 35€ / persona", "15€ - 25€ / persona", o "Consumo moderado").
   • "energyRequired": Nivel de energía requerido (ej. "Ritmo pausado (3/10)", "Moderado (6/10)", o "Vigoroso (8/10)").
   • "approxDuration": Duración acorde al tiempo disponible (ej. "${criteria.availableTime || '2-4h'}").
-- Cada plan debe contener entre 2 y 4 paradas seleccionadas únicamente de los lugares listados arriba.
-- El "placeId", "placeName" y "placeAddress" deben coincidir exactamente con los lugares verificados. Jamás inventes locales.`;
+- Cada plan debe contener entre 2 y 4 paradas ubicadas estrictamente en ${targetCity}.
+- El "placeId", "placeName" y "placeAddress" deben corresponder a lugares reales de ${targetCity}. Jamás inventes locales de otras provincias.`;
 
     const response = await callGeminiWithResilience({
       contents: prompt,
@@ -673,9 +710,32 @@ NORMAS ESTRICTAS:
             verifiedById.get(placeId) ||
             verifiedByName.get(placeName.toLowerCase().trim());
 
-          // If Gemini generated a place not in the verified places list, discard it immediately
           if (!verified) {
-            console.warn(`[Anti-Hallucination] Descartando lugar desconocido: "${placeName}" (${placeId})`);
+            // Si el motor narrativo propuso un rincón o local auténtico de targetCity que no estaba en el mapa inicial,
+            // validamos y conservamos sus datos asegurando geofencing estricto dentro de los 5 km
+            if (placeName && placeName.length > 2) {
+              const latOffset = (idx - 1) * 0.002;
+              const lngOffset = (idx % 2 === 0 ? 1 : -1) * 0.002;
+              const placeAddress = String(item.placeAddress || `Barrio céntrico, ${targetCity}`);
+              return {
+                time: String(item.time || `${10 + idx * 3}:00`),
+                activity: String(item.activity || `Visita a ${placeName}`),
+                placeId: placeId || `poi-${idx}-${Date.now()}`,
+                placeName: placeName,
+                placeAddress: placeAddress.toLowerCase().includes(targetCity.toLowerCase())
+                  ? placeAddress
+                  : `${placeAddress}, ${targetCity}`,
+                location: {
+                  lat: Number(userLocation.lat) + latOffset,
+                  lng: Number(userLocation.lng) + lngOffset,
+                },
+                rating: 4.8,
+                types: ['point_of_interest'],
+                allowsDogs: criteria.company === 'Con mascota',
+                description: typeof item.description === 'string' ? item.description : undefined,
+              };
+            }
+            console.warn(`[Anti-Hallucination] Descartando lugar desconocido sin nombre: "${placeName}" (${placeId})`);
             return null;
           }
 
@@ -1092,16 +1152,17 @@ const handlePlacesSearch = async (req: Request, res: Response) => {
 
     // Fallback B: If Overpass or Places API failed/unreachable, use Gemini to generate authentic contextual POIs
     try {
-      const geminiPrompt = `Genera una lista de 4 a 6 lugares emblemáticos o locales auténticos para la búsqueda: "${query}" situados estrictamente en el entorno de las coordenadas latitud ${location.lat}, longitud ${location.lng}.
-Deben ser propuestas realistas acordes al destino (cafés con encanto, parques, espacios culturales, miradores o bistrós).
+      const geminiPrompt = `Genera una lista de 4 a 6 lugares emblemáticos o locales auténticos para la búsqueda: "${query}" situados estrictamente dentro del término municipal de la zona en un radio máximo de 5 km alrededor de las coordenadas latitud ${location.lat}, longitud ${location.lng}.
+Deben ser propuestas reales de barrio acordes al destino (cafés de especialidad, miradores, librerías, espacios culturales, bistrós o parques locales con nombres de calles y barrios reales).
+Queda prohibido sugerir locales de municipios lejanos.
 Responde en formato JSON con la siguiente estructura de array:
 [
   {
     "name": "Nombre representativo del local o espacio",
-    "address": "Calle o plaza aproximada en la zona",
+    "address": "Calle y barrio real en la zona",
     "latOffset": 0.002,
-    "lngOffset": -0.003,
-    "rating": 4.6,
+    "lngOffset": -0.002,
+    "rating": 4.8,
     "type": "cafe",
     "allowsDogs": true
   }

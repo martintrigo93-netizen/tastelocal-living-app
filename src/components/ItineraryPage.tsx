@@ -58,6 +58,7 @@ const ItineraryPage: React.FC = () => {
     savedPlans,
     isSavedPlansModalOpen,
     setIsSavedPlansModalOpen,
+    searchCriteria,
   } = useAppContext();
   const [selectedPlanIndex, setSelectedPlanIndex] = useState<number>(0);
   const [pageMode, setPageMode] = useState<PageMode>('proposals');
@@ -160,25 +161,39 @@ const ItineraryPage: React.FC = () => {
     <div className="flex flex-col h-full bg-[#0F1015] text-white animate-fade-in overflow-hidden select-none">
       {/* Top Header */}
       <header className="px-5 py-3.5 bg-[#0F1015]/95 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between sticky top-0 z-20">
-        <button
-          onClick={pageMode === 'detail' ? () => setPageMode('proposals') : handleBackToHome}
-          className="text-gray-400 hover:text-white transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
-        >
-          <svg className="w-4 h-4 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
-          </svg>
-          {pageMode === 'detail' ? (
-            <>
-              <span className="hidden sm:inline">Volver a las 3 propuestas</span>
-              <span className="sm:hidden">3 Propuestas</span>
-            </>
-          ) : (
-            <>
-              <span className="hidden sm:inline">Ajustar búsqueda</span>
-              <span className="sm:hidden">Atrás</span>
-            </>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={pageMode === 'detail' ? () => setPageMode('proposals') : handleBackToHome}
+            className="text-gray-400 hover:text-white transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+          >
+            <svg className="w-4 h-4 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
+            </svg>
+            {pageMode === 'detail' ? (
+              <>
+                <span className="hidden sm:inline">Volver a las 3 propuestas</span>
+                <span className="sm:hidden">3 Propuestas</span>
+              </>
+            ) : (
+              <>
+                <span className="hidden sm:inline">Ajustar búsqueda</span>
+                <span className="sm:hidden">Atrás</span>
+              </>
+            )}
+          </button>
+
+          {(searchCriteria?.cityName || searchCriteria?.location?.cityName) && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#FF5E2B]/10 border border-[#FF5E2B]/20 text-[11px] text-gray-200">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FF5E2B]"></span>
+              <span className="font-semibold text-white">
+                {searchCriteria.cityName || searchCriteria.location?.cityName}
+              </span>
+              <span className="text-[10px] text-[#FF5E2B] font-mono">
+                {searchCriteria.environment === 'Escapada' ? 'Alrededores' : '≤ 5 km'}
+              </span>
+            </div>
           )}
-        </button>
+        </div>
 
         {/* Header Right Actions: PWAInstall, AudioNarrator, Saved Plans Modal Button & View Mode Toggle */}
         <div className="flex items-center gap-2">

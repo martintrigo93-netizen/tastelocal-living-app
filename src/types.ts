@@ -3,6 +3,8 @@ export type Page = 'welcome' | 'home' | 'itinerary';
 export interface UserLocation {
   lat: number;
   lng: number;
+  cityName?: string;
+  formattedAddress?: string;
 }
 
 export interface Mood {
@@ -50,6 +52,7 @@ export interface SearchCriteria {
   company: string;
   mobility: string;
   location: UserLocation;
+  cityName?: string;
   intensity: number;
   availableTime?: '< 2h' | '2-4h' | 'Día completo';
   user_mood_description?: string;

@@ -96,5 +96,17 @@ export function getEventBasedSearchQueries(
     queries.push('café de especialidad desayuno', 'panadería artesanal con café');
   }
 
+  // Geofencing Estricto: Si hay un municipio definido y no es Escapada, orientar todas las consultas a dicho municipio
+  const cityName =
+    criteria.cityName ||
+    criteria.location?.cityName ||
+    (typeof criteria.location?.formattedAddress === 'string'
+      ? criteria.location.formattedAddress.split(',')[0].trim()
+      : undefined);
+
+  if (cityName && criteria.environment !== 'Escapada') {
+    return queries.map((q) => `${q} en ${cityName}`);
+  }
+
   return queries;
 }

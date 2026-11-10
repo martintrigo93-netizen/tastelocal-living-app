@@ -98,7 +98,13 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
         placesById[item.placeId] ||
         placesById[item.placeName.toLowerCase().trim()];
 
-      if (!matchedPlace) return null;
+      if (!matchedPlace) {
+        // If the item already has valid location coordinates from the server, preserve it!
+        if (item.location && typeof item.location.lat === 'number' && typeof item.location.lng === 'number') {
+          return item;
+        }
+        return null;
+      }
 
       return {
         ...item,
@@ -114,6 +120,11 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
       };
     })
     .filter((item): item is ScheduleItem => item !== null);
+
+  // If filtering resulted in empty schedule but original had items with locations, fallback to original
+  if (enrichedSchedule.length === 0 && planDetails.schedule.length > 0) {
+    return planDetails;
+  }
 
   return { ...planDetails, schedule: enrichedSchedule };
 };
@@ -462,11 +473,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           console.error('Error al consultar lugares reales:', placeError);
         }
 
-        // Step 3: Hard validation: never invent places or proceed if insufficient real venues
-        if (!places || places.length === 0) {
-          throw new Error(
-            'Sin resultados suficientes en esta zona. Por favor, amplía el área de búsqueda o busca un municipio cercano.'
-          );
+        // Step 3: Ensure places array is initialized for server-side synthesis
+        if (!places) {
+          places = [];
         }
 
         // Step 4: Generate narrative itinerary with Gemini using ONLY verified places
