@@ -55,19 +55,27 @@ const SavedPlansModal: React.FC<SavedPlansModalProps> = ({ isOpen, onClose }) =>
       role="dialog"
       aria-modal="true"
       aria-labelledby="saved-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-fade-in text-left select-none"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-5 bg-black/80 backdrop-blur-md animate-fade-in text-left select-none"
     >
-      <div className="relative w-full max-w-xl max-h-[88vh] bg-[#0F1015] border border-white/10 rounded-3xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative w-full max-w-xl max-h-[90vh] sm:max-h-[88vh] bg-[#0F1015] border-t sm:border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden safe-pb">
+        {/* Mobile Drag Handle */}
+        <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mt-2.5 mb-1 sm:hidden flex-shrink-0" />
+
         {/* Header */}
-        <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between bg-[#0F1015]/95">
+        <div className="px-5 py-3.5 sm:py-4 border-b border-white/[0.08] flex items-center justify-between bg-[#0F1015]/95">
           <div className="flex items-center gap-2.5">
             <span className="w-8 h-8 rounded-xl bg-[#FF5E2B]/15 text-[#FF5E2B] flex items-center justify-center text-sm font-bold border border-[#FF5E2B]/20 shadow-sm">
               ❤️
             </span>
             <div>
-              <h3 id="saved-modal-title" className="text-base font-extrabold text-white tracking-tight">
-                Mis Experiencias Guardadas
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 id="saved-modal-title" className="text-base font-extrabold text-white tracking-tight">
+                  Mis Experiencias Guardadas
+                </h3>
+                <span className="text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.2 rounded-full">
+                  ⚡ 100% Offline
+                </span>
+              </div>
               <p className="text-[11px] text-gray-400">
                 {savedPlans.length} {savedPlans.length === 1 ? 'plan conservado' : 'planes conservados'} en tu dispositivo local
               </p>

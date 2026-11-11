@@ -6,6 +6,8 @@ import SavedPlansModal from './SavedPlansModal';
 import SharePlanModal from './SharePlanModal';
 import AudioNarrator from './AudioNarrator';
 import { getAmbienceTag } from './ItineraryPage';
+import QuickActionsBar from './QuickActionsBar';
+import ChainedTimeline from './ChainedTimeline';
 
 interface DetailPageProps {
   plan: ProposalPlan;
@@ -238,6 +240,22 @@ const DetailPage: React.FC<DetailPageProps> = ({
 
       {/* Main Content Body */}
       <div className="px-5 py-6 space-y-7 max-w-4xl mx-auto w-full">
+        {/* Barra de Acciones Rápidas Táctil 1-Tap (Cómo llegar, Guardar plan, Compartir) */}
+        <div className="p-4 rounded-3xl bg-white/[0.03] border border-white/10 shadow-xl backdrop-blur-md">
+          <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.08]">
+            <span className="text-[10px] font-black uppercase tracking-widest text-[#FF5E2B]">
+              Acciones Rápidas 1-Tap
+            </span>
+            <span className="text-[11px] text-gray-400">
+              Disponible sin conexión en Guardados
+            </span>
+          </div>
+          <QuickActionsBar
+            plan={plan}
+            onOpenShareModal={() => setIsShareModalOpen(true)}
+          />
+        </div>
+
         {/* TASTELOCAL PLAN B: Alerta en Ficha */}
         {(plan.isPlanB || weather?.isRainy) && (
           <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-950/60 via-[#0F1015] to-transparent border border-blue-500/40 text-xs text-gray-200 animate-fade-in flex items-start gap-3.5 shadow-lg">
@@ -535,168 +553,15 @@ const DetailPage: React.FC<DetailPageProps> = ({
             </div>
           )}
 
-          {/* Tab 2: Accessible Chronological List (Paso 1, Paso 2, Paso 3) */}
+          {/* Tab 2: Accessible Chronological List & Chained Timeline */}
           {activeTab === 'timeline' && (
-            <div className="relative pl-6 space-y-6 pt-2 animate-fade-in">
-              {/* Dotted connecting line */}
-              <div className="absolute left-[7px] top-4 bottom-4 w-0.5 bg-gradient-to-b from-[#FF5E2B] via-white/20 to-[#FF5E2B]"></div>
-
-              {plan.schedule.map((item, index) => {
-                const thumbnail = getStopThumbnail(item, index);
-                const stopAmbience = getAmbienceTag(item, plan.energyRequired);
-                const walkingNavUrl = item.location
-                  ? `https://www.google.com/maps/dir/?api=1&destination=${item.location.lat},${item.location.lng}&travelmode=walking`
-                  : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`;
-
-                return (
-                  <div key={(item.placeId || 'step') + index} className="relative space-y-3">
-                    {/* Glowing Coral Pin on Timeline */}
-                    <div className="absolute -left-[23px] top-2 w-4 h-4 rounded-full bg-[#FF5E2B] border-2 border-[#0F1015] shadow-[0_0_10px_#FF5E2B]"></div>
-
-                    <article className="p-4 sm:p-5 rounded-2xl bg-white/[0.04] border border-white/10 hover:border-[#FF5E2B]/40 transition flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                      {/* Photo Thumbnail */}
-                      <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden flex-shrink-0 border border-white/10 relative">
-                        <img
-                          src={thumbnail}
-                          alt={item.placeName}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
-                        <span className="absolute bottom-0 right-0 bg-[#FF5E2B] text-white text-[9px] font-black px-1.5 py-0.5 rounded-tl-md">
-                          #{index + 1}
-                        </span>
-                      </div>
-
-                      {/* Stop Info */}
-                      <div className="flex-grow min-w-0 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-[10px] font-bold text-[#FF5E2B] bg-[#FF5E2B]/15 px-2 py-0.5 rounded-md">
-                            {item.time}
-                          </span>
-                          <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">
-                            Paso 0{index + 1}
-                          </span>
-
-                          {/* Stop Ambience badge */}
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border flex items-center gap-1 ${stopAmbience.badgeClass}`}>
-                            <span>{stopAmbience.emoji}</span>
-                            <span>{stopAmbience.label}</span>
-                          </span>
-
-                          {/* Pet Badge */}
-                          {(item.allowsDogs || isPetFilterActive) && (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
-                              <span>🐾</span>
-                              <span>Pet-Friendly</span>
-                            </span>
-                          )}
-
-                          {/* Confirmed Accessibility Badge */}
-                          {item.accessibilityOptions?.isConfirmedAccessible && (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-300 flex items-center gap-1" title="Acceso para movilidad reducida confirmado por Places API">
-                              <span>♿</span>
-                              <span>Movilidad Reducida</span>
-                            </span>
-                          )}
-                        </div>
-
-                        <h4 className="text-sm sm:text-base font-bold text-white truncate">
-                          {item.placeName}
-                        </h4>
-
-                        <p className="text-xs text-gray-300 font-medium">{item.activity}</p>
-                        <p className="text-[11px] text-gray-400 truncate">{item.placeAddress || 'Dirección no especificada'}</p>
-
-                        {/* Real Rating or "Sin valoraciones suficientes" */}
-                        <div className="flex items-center gap-2 pt-0.5">
-                          <span className="text-[10px] text-gray-400">
-                            ⭐ {item.rating ? `${item.rating.toFixed(1)} / 5` : 'Sin valoraciones suficientes'}
-                          </span>
-                        </div>
-
-                        {item.description && (
-                          <p className="text-xs text-gray-300 italic bg-white/[0.02] p-2.5 rounded-xl border border-white/5 mt-1.5">
-                            "{item.description}"
-                          </p>
-                        )}
-
-                        {/* Transit connection info to next stop */}
-                        {item.routeInfo && (
-                          <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-2 text-[11px] text-gray-400">
-                            <span>{TRAVEL_ICONS[item.routeInfo.travelMode] || '🚶 A pie'}</span>
-                            <span>•</span>
-                            <span>{item.routeInfo.duration}</span>
-                            <span>•</span>
-                            <span>{item.routeInfo.distance}</span>
-                          </div>
-                        )}
-
-                        {/* Quick Actions Bar in Timeline */}
-                        <div className="mt-3 pt-2 border-t border-white/10 flex items-center gap-2 flex-wrap">
-                          <a
-                            href={walkingNavUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="py-1 px-3 rounded-lg bg-[#FF5E2B]/15 hover:bg-[#FF5E2B] text-[#FF5E2B] hover:text-white transition text-xs font-bold flex items-center gap-1 cursor-pointer"
-                          >
-                            <span>🧭 Iniciar Ruta</span>
-                          </a>
-
-                          {item.phoneNumber ? (
-                            <a
-                              href={`tel:${item.phoneNumber}`}
-                              className="py-1 px-2.5 rounded-lg bg-white/5 hover:bg-emerald-500/20 text-gray-200 hover:text-emerald-300 transition text-xs font-bold flex items-center gap-1 border border-white/5"
-                              title={`Llamar a ${item.placeName}`}
-                            >
-                              <span>📞 Llamar</span>
-                            </a>
-                          ) : (
-                            <span className="py-1 px-2 rounded-lg text-gray-500 text-[11px] cursor-default" title="Teléfono no listado">
-                              📞 Sin tlf.
-                            </span>
-                          )}
-
-                          {item.websiteUri ? (
-                            <a
-                              href={item.websiteUri}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="py-1 px-2.5 rounded-lg bg-white/5 hover:bg-sky-500/20 text-gray-200 hover:text-sky-300 transition text-xs font-bold flex items-center gap-1 border border-white/5"
-                              title="Página web oficial"
-                            >
-                              <span>🌐 Sitio Web</span>
-                            </a>
-                          ) : (
-                            <a
-                              href={`https://www.google.com/search?q=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="py-1 px-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition text-[11px] font-medium flex items-center gap-1"
-                              title="Buscar información oficial en Google"
-                            >
-                              <span>🌐 Info</span>
-                            </a>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Direct Single Stop Map Action */}
-                      <a
-                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="py-2 px-3.5 rounded-xl bg-white/5 hover:bg-[#FF5E2B]/20 text-gray-300 hover:text-white transition text-xs font-bold flex items-center gap-1.5 border border-white/10 flex-shrink-0 cursor-pointer self-stretch sm:self-auto justify-center"
-                      >
-                        <span>Cómo llegar</span>
-                        <svg className="w-3.5 h-3.5 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                        </svg>
-                      </a>
-                    </article>
-                  </div>
-                );
-              })}
-            </div>
+            <ChainedTimeline
+              schedule={plan.schedule}
+              userLocation={searchCriteria?.location}
+              planTitle={plan.title}
+              energyRequired={plan.energyRequired}
+              isPetFilterActive={isPetFilterActive}
+            />
           )}
         </section>
 

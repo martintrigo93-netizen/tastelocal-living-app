@@ -229,8 +229,10 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
 
   const idealSchedule = [
     {
-      time: '11:00',
+      order: 1,
+      time: '18:00 - Café / Aperitivo',
       activity: 'Desayuno pausado y café de especialidad con encanto local',
+      walkingTimeFromPrevious: 'Punto de inicio',
       placeId: 'resilient-poi-1',
       placeName: `Café de Autor & Obrador (${targetCity})`,
       placeAddress: `Casco histórico de ${targetCity}`,
@@ -241,8 +243,10 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       description: `Atmósfera serena, luz natural y aroma a café recién molido en el corazón de ${targetCity}.`,
     },
     {
-      time: '13:00',
+      order: 2,
+      time: '19:15 - Cultura / Paseo',
       activity: 'Paseo cultural y descubrimiento de rincones con encanto',
+      walkingTimeFromPrevious: '8 min caminando',
       placeId: 'resilient-poi-2',
       placeName: `Mirador & Espacio Cultural Local`,
       placeAddress: `Paseo cultural y mirador de ${targetCity}`,
@@ -253,8 +257,10 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       description: `Un rincón con perspectiva singular en ${targetCity} para desconectar y saborear la esencia del entorno.`,
     },
     {
-      time: '15:00',
-      activity: 'Almuerzo de proximidad con producto de mercado',
+      order: 3,
+      time: '21:00 - Cena local',
+      activity: 'Almuerzo o cena de proximidad con producto de mercado',
+      walkingTimeFromPrevious: '10 min caminando',
       placeId: 'resilient-poi-3',
       placeName: `Bistró & Cocina de Temporada`,
       placeAddress: `Barrio tradicional de ${targetCity}`,
@@ -262,7 +268,7 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       rating: 4.9,
       types: ['restaurant'],
       allowsDogs: criteria.company === 'Con mascota',
-      description: `Platos sinceros elaborados con ingredientes de proximidad y trato cercano en ${targetCity}.`,
+      description: `Platos sinceros elaborados con ingredientes de proximidad y sobremesa sin prisas en ${targetCity}.`,
     },
   ];
 
@@ -386,14 +392,45 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
 // 2. Generate Itinerary Handler (Support both /api/gemini/generate-itinerary and /api/generate)
 const handleGenerateItinerary = async (req: Request, res: Response) => {
   try {
-    const { criteria, weather, places } = req.body || {};
+    const { criteria, weather, places, latitude, longitude, searchRadiusKm, gpsLocation } = req.body || {};
 
     if (!criteria) {
       const fallbackExperience = buildResilientItinerary(req.body || {});
       return res.status(200).json(fallbackExperience);
     }
 
-    const userLocation = criteria.location || { lat: 40.4168, lng: -3.7038 };
+    const exactLat =
+      typeof latitude === 'number'
+        ? latitude
+        : typeof gpsLocation?.latitude === 'number'
+        ? gpsLocation.latitude
+        : criteria.location?.lat ?? 40.4168;
+
+    const exactLng =
+      typeof longitude === 'number'
+        ? longitude
+        : typeof gpsLocation?.longitude === 'number'
+        ? gpsLocation.longitude
+        : criteria.location?.lng ?? -3.7038;
+
+    const searchRadius = Number(searchRadiusKm || gpsLocation?.searchRadiusKm || criteria.searchRadiusKm || 5);
+    const isGpsActive = Boolean(
+      criteria.isGpsActive ||
+      criteria.location?.isGps ||
+      gpsLocation ||
+      (typeof latitude === 'number' && typeof longitude === 'number')
+    );
+
+    const userLocation = {
+      lat: exactLat,
+      lng: exactLng,
+      cityName: criteria.cityName || criteria.location?.cityName,
+      formattedAddress: criteria.location?.formattedAddress,
+      neighborhood: criteria.location?.neighborhood,
+      isGps: isGpsActive,
+      accuracyMeters: criteria.location?.accuracyMeters,
+    };
+
     const targetCity =
       criteria.cityName ||
       criteria.location?.cityName ||
@@ -597,13 +634,44 @@ El usuario ha seleccionado explorar los alrededores de ${targetCity}. Se permite
 - TONO DE GUÍA LOCAL EXPERTO: Redacta con el tono de un conocedor local apasionado que sabe cuáles son las mejores calles, rincones y ambientes de barrio, evitando tópicos turísticos masivos o folletos provinciales vacíos.
 - DIRECCIÓN REAL: Cada parada debe indicar en 'placeAddress' su calle y barrio verosímil dentro de ${targetCity}.`;
 
+    // 7. Directiva de Geolocalización GPS en Tiempo Real
+    const gpsDirective = isGpsActive
+      ? `\n🛰️ GEOLOCALIZACIÓN GPS EN TIEMPO REAL ACTIVA (ENTORNO INMEDIATO):
+- Posición GPS exacta del usuario: Latitud ${userLocation.lat.toFixed(5)}, Longitud ${userLocation.lng.toFixed(5)} ${userLocation.neighborhood ? `(Barrio/Zona: ${userLocation.neighborhood})` : ''}.
+- Radio de búsqueda inmediato: ${searchRadius} km desde esta posición exacta.
+- PROXIMIDAD INMEDIATA OBLIGATORIA: El usuario se encuentra físicamente en estas coordenadas en este momento. Las propuestas deben orientarse de manera prioritaria al ENTORNO INMEDIATO de este punto exacto (barrio, calles adyacentes y plazas a una distancia caminable o dentro del radio de ${searchRadius} km).
+- Mención en la experiencia: Justifica cómo el punto de partida aprovecha la ubicación actual del usuario para empezar la experiencia sin desplazamientos innecesarios.`
+      : '';
+
+    // 8. Directiva de Modo de Experiencia: Ruta Encadenada (Multi-Parada) vs Plan Único
+    const experienceMode = criteria.experienceMode || 'chained';
+    const isChainedRoute = experienceMode === 'chained';
+    const chainedRouteDirective = isChainedRoute
+      ? `\n🔗 MODO RUTA ENCADENADA (2-3 PARADAS COHERENTES) ACTIVADO:
+- REGLA ESTRICTA DE SECUENCIA Y PROXIMIDAD PEATONAL:
+  • Cada uno de los 3 planes DEBE componerse de EXACTAMENTE 3 paradas cronológicas conectadas entre sí a pie (Parada 1 -> Parada 2 -> Parada 3).
+  • Las 3 paradas deben estar situadas en el MISMO BARRIO o zona contigua, a MENOS DE 15 MINUTOS caminando entre una y otra (distancia peatonal máxima de 1 km entre paradas contiguas).
+  • En cada parada del array 'schedule' DEBES incluir obligatoriamente:
+    - "order": 1 para la primera parada, 2 para la segunda parada, 3 para la tercera parada.
+    - "time": Franja horaria sugerida secuencial y en orden ascendente (ej. "18:00 - Café / Aperitivo", "19:15 - Cultura / Paseo", "21:00 - Cena local").
+    - "activity": Nombre evocador de la actividad o momento (ej. "Aperitivo y Café de Especialidad", "Paseo Cultural o Galería", "Cena y Sobremesa Local").
+    - "walkingTimeFromPrevious": Tiempo estimado caminando desde la parada anterior:
+      * Para la Parada 1: "Punto de inicio" (o "Inicio de ruta").
+      * Para la Parada 2: Tiempo a pie desde la Parada 1 (ej. "8 min caminando" o "7 min caminando", NUNCA más de 15 min).
+      * Para la Parada 3: Tiempo a pie desde la Parada 2 (ej. "10 min caminando" o "9 min caminando", NUNCA más de 15 min).
+    - "placeName", "placeAddress": Nombres reales y calles verosímiles en ${targetCity}.`
+      : `\n🎯 MODO PLAN ÚNICO (RECOMENDACIÓN INDIVIDUAL) ACTIVADO:
+- El usuario prefiere 1 recomendación individual focalizada y memorable en ${targetCity} (1 sola parada principal) para disfrutar a su propio ritmo sin desplazamientos continuos.
+- Para esa parada, incluye "order": 1 y "walkingTimeFromPrevious": "Punto de inicio".`;
+
     const prompt = `Eres un diseñador de experiencias locales y concierge urbano de primer nivel para la app "TasteLocal Living", especializado con conocimiento íntimo en el municipio de "${targetCity}".
 Tu función es actuar como motor narrativo y curador hiperlocal de experiencias en "${targetCity}".
 
 DESTINO Y GEOFENCING:
 - Municipio: ${targetCity}
-- Coordenadas de referencia: Lat ${userLocation.lat}, Lng ${userLocation.lng}
+- Coordenadas de referencia: Lat ${userLocation.lat}, Lng ${userLocation.lng} ${userLocation.isGps ? '(Señal GPS en tiempo real confirmada)' : ''}
 ${geofencingDirective}
+${gpsDirective}
 
 PERFIL DEL USUARIO:
 - Estado de ánimo: ${criteria.user_mood}
@@ -630,12 +698,13 @@ ${weatherDirective}
 ${userAffinitiesDirective}
 ${surpriseMeDirective}
 ${petDirective}
+${chainedRouteDirective}
 
 LUGARES REALES Y VERIFICADOS DISPONIBLES EN ${targetCity.toUpperCase()}:
 ${availablePlacesDescription}
 
 MISIÓN OBLIGATORIA: Generar TRES propuestas realmente diferenciadas en ${targetCity} dentro del radio de 5 km:
-1. PLAN IDEAL -> La propuesta con encaje directo más fiel a la emoción, el tiempo disponible (${criteria.availableTime || '2-4h'}) y nivel de energía en ${targetCity}.
+1. PLAN IDEAL -> La propuesta con encaje directo más fiel a la emoción, el modo de experiencia (${experienceMode}) y nivel de energía en ${targetCity}.
 2. PLAN ALTERNATIVO -> Misma emoción de partida pero con un enfoque distinto en la misma zona (ej. exterior/naturaleza vs. cultural/acogedor o gastronómico).
 3. PLAN SORPRESA -> Una propuesta singular, inesperada pero realizable y segura, que rompe la rutina en ${targetCity}.
 
@@ -648,7 +717,7 @@ NORMAS ESTRICTAS:
   • "budgetEstimate": Presupuesto orientativo (ej. "20€ - 35€ / persona", "15€ - 25€ / persona", o "Consumo moderado").
   • "energyRequired": Nivel de energía requerido (ej. "Ritmo pausado (3/10)", "Moderado (6/10)", o "Vigoroso (8/10)").
   • "approxDuration": Duración acorde al tiempo disponible (ej. "${criteria.availableTime || '2-4h'}").
-- Cada plan debe contener entre 2 y 4 paradas ubicadas estrictamente en ${targetCity}.
+- Cada parada debe incluir su "order" (1, 2, 3), su franja horaria sugerida "time", y "walkingTimeFromPrevious" (tiempo a pie ≤ 15 min desde la parada anterior).
 - El "placeId", "placeName" y "placeAddress" deben corresponder a lugares reales de ${targetCity}. Jamás inventes locales de otras provincias.`;
 
     const response = await callGeminiWithResilience({
@@ -677,11 +746,13 @@ NORMAS ESTRICTAS:
                   items: {
                     type: Type.OBJECT,
                     properties: {
+                      order: { type: Type.INTEGER },
                       time: { type: Type.STRING },
                       activity: { type: Type.STRING },
                       placeName: { type: Type.STRING },
                       placeId: { type: Type.STRING },
                       placeAddress: { type: Type.STRING },
+                      walkingTimeFromPrevious: { type: Type.STRING },
                       description: { type: Type.STRING },
                     },
                     required: ['time', 'activity', 'placeName', 'placeId', 'placeAddress'],
@@ -718,8 +789,15 @@ NORMAS ESTRICTAS:
               const lngOffset = (idx % 2 === 0 ? 1 : -1) * 0.002;
               const placeAddress = String(item.placeAddress || `Barrio céntrico, ${targetCity}`);
               return {
-                time: String(item.time || `${10 + idx * 3}:00`),
+                order: typeof item.order === 'number' ? item.order : idx + 1,
+                time: String(item.time || `${10 + idx * 2}:00`),
                 activity: String(item.activity || `Visita a ${placeName}`),
+                walkingTimeFromPrevious:
+                  typeof item.walkingTimeFromPrevious === 'string'
+                    ? item.walkingTimeFromPrevious
+                    : idx === 0
+                    ? 'Punto de inicio'
+                    : `${6 + idx * 3} min caminando`,
                 placeId: placeId || `poi-${idx}-${Date.now()}`,
                 placeName: placeName,
                 placeAddress: placeAddress.toLowerCase().includes(targetCity.toLowerCase())
@@ -740,8 +818,15 @@ NORMAS ESTRICTAS:
           }
 
           return {
-            time: String(item.time || `${10 + idx * 3}:00`),
+            order: typeof item.order === 'number' ? item.order : idx + 1,
+            time: String(item.time || `${10 + idx * 2}:00`),
             activity: String(item.activity || `Visita a ${verified.name}`),
+            walkingTimeFromPrevious:
+              typeof item.walkingTimeFromPrevious === 'string'
+                ? item.walkingTimeFromPrevious
+                : idx === 0
+                ? 'Punto de inicio'
+                : `${6 + idx * 3} min caminando`,
             placeId: verified.id,
             placeName: verified.name,
             placeAddress: verified.address,
@@ -978,6 +1063,108 @@ const handleGeocode = async (req: Request, res: Response) => {
 
 app.post('/api/places/geocode', handleGeocode);
 app.post('/api/geocode', handleGeocode);
+
+// 3.1 Reverse Geocoding endpoint (Native GPS to Town & Neighborhood)
+const handleReverseGeocode = async (req: Request, res: Response) => {
+  try {
+    const lat = Number(req.body.lat ?? req.body.latitude);
+    const lng = Number(req.body.lng ?? req.body.longitude);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ error: 'Valid latitude and longitude are required' });
+    }
+
+    const apiKey = getMapsApiKey();
+    if (apiKey) {
+      try {
+        const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}&language=es`;
+        const gRes = await fetch(url);
+        const data = await gRes.json();
+        if (data.status === 'OK' && data.results && data.results.length > 0) {
+          const result = data.results[0];
+          let cityName = '';
+          let neighborhood = '';
+
+          for (const comp of result.address_components || []) {
+            if (comp.types.includes('locality')) {
+              cityName = comp.long_name;
+            } else if (!cityName && (comp.types.includes('postal_town') || comp.types.includes('administrative_area_level_2'))) {
+              cityName = comp.long_name;
+            }
+            if (comp.types.includes('sublocality') || comp.types.includes('neighborhood')) {
+              neighborhood = comp.long_name;
+            }
+          }
+
+          return res.json({
+            cityName: cityName || 'Tu ubicación',
+            neighborhood: neighborhood || undefined,
+            formattedAddress: result.formatted_address,
+            location: {
+              lat,
+              lng,
+              cityName: cityName || 'Tu ubicación',
+              formattedAddress: result.formatted_address,
+              neighborhood: neighborhood || undefined,
+              isGps: true,
+            },
+          });
+        }
+      } catch (gErr) {
+        console.warn('Google reverse geocode error, trying OSM fallback:', gErr);
+      }
+    }
+
+    // Fallback A: OpenStreetMap Nominatim Reverse
+    try {
+      const nomUrl = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=es`;
+      const nomRes = await fetch(nomUrl, {
+        headers: { 'User-Agent': 'TasteLocalLiving/1.0 (contact: info@tastelocal.app)' },
+      });
+      if (nomRes.ok) {
+        const nomData = await nomRes.json();
+        const addr = nomData.address || {};
+        const cityName = addr.city || addr.town || addr.village || addr.municipality || addr.county || 'Tu zona';
+        const neighborhood = addr.suburb || addr.neighbourhood || addr.quarter || addr.city_district;
+
+        return res.json({
+          cityName,
+          neighborhood: neighborhood || undefined,
+          formattedAddress: nomData.display_name,
+          location: {
+            lat,
+            lng,
+            cityName,
+            formattedAddress: nomData.display_name,
+            neighborhood: neighborhood || undefined,
+            isGps: true,
+          },
+        });
+      }
+    } catch (nomErr) {
+      console.warn('Nominatim reverse geocode failed:', nomErr);
+    }
+
+    // Fallback B: Heuristic coordinates
+    return res.json({
+      cityName: 'Tu ubicación GPS',
+      formattedAddress: `Coordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      location: {
+        lat,
+        lng,
+        cityName: 'Tu ubicación GPS',
+        formattedAddress: `Coordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        isGps: true,
+      },
+    });
+  } catch (error) {
+    console.error('Reverse geocode unexpected error:', error);
+    return res.status(500).json({ error: 'Error al procesar geocodificación inversa' });
+  }
+};
+
+app.post('/api/geocode/reverse', handleReverseGeocode);
+app.post('/api/places/reverse-geocode', handleReverseGeocode);
 
 // 4. Places Search endpoint (Places API New)
 const handlePlacesSearch = async (req: Request, res: Response) => {

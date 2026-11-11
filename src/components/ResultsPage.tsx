@@ -4,6 +4,8 @@ import { type ProposalPlan, type WeatherInfo, type ScheduleItem } from '../types
 import AudioNarrator from './AudioNarrator';
 import { getAmbienceTag } from './ItineraryPage';
 import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
+import QuickActionsBar from './QuickActionsBar';
+import ChainedTimeline from './ChainedTimeline';
 
 interface ResultsPageProps {
   proposals: ProposalPlan[];
@@ -260,6 +262,13 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
           </p>
         </div>
 
+        {/* Barra de Acciones Rápidas Táctil 1-Tap (Cómo llegar, Guardar plan, Compartir) */}
+        <QuickActionsBar
+          plan={activePlan}
+          onOpenShareModal={onOpenShareModal}
+          className="pt-1 pb-1"
+        />
+
         {/* Sección Requerida: "Por qué conecta con cómo te sientes hoy" */}
         <div className="p-4 rounded-2xl bg-[#FF5E2B]/[0.08] border border-[#FF5E2B]/25 space-y-2">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -305,142 +314,14 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
           </div>
         )}
 
-        {/* Paradas Incluidas en la Propuesta */}
-        <div className="space-y-3 pt-1">
-          <h4 className="text-xs font-bold uppercase tracking-wider text-gray-400">
-            Paradas verificadas ({activePlan.schedule.length} lugares reales):
-          </h4>
-
-          <div className="grid grid-cols-1 gap-3">
-            {activePlan.schedule.map((item, index) => {
-              const coverPhoto = getPlaceCoverImage(item, index);
-              const stopAmbience = getAmbienceTag(item, activePlan.energyRequired);
-              const singleNavUrl = item.location
-                ? `https://www.google.com/maps/dir/?api=1&destination=${item.location.lat},${item.location.lng}&travelmode=walking`
-                : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`;
-
-              return (
-                <div
-                  key={(item.placeId || 'stop') + index}
-                  className="p-3.5 rounded-2xl bg-[#0F1015]/80 border border-white/10 hover:border-[#FF5E2B]/40 transition flex flex-col justify-between group gap-2.5"
-                >
-                  <div className="flex items-start gap-3.5">
-                    {/* Foto en miniatura */}
-                    <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden flex-shrink-0 relative border border-white/10">
-                      <img
-                        src={coverPhoto}
-                        alt={item.placeName}
-                        className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                        loading="lazy"
-                      />
-                      <span className="absolute bottom-0 right-0 bg-[#FF5E2B] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-tl-md">
-                        #{index + 1}
-                      </span>
-                    </div>
-
-                    {/* Información de la parada */}
-                    <div className="min-w-0 flex-grow">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] font-bold text-[#FF5E2B] bg-[#FF5E2B]/15 px-2 py-0.5 rounded-md">
-                          {item.time}
-                        </span>
-                        <span className="text-xs text-gray-300 truncate font-semibold">
-                          {item.activity}
-                        </span>
-
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border flex items-center gap-1 ${stopAmbience.badgeClass}`}>
-                          <span>{stopAmbience.emoji}</span>
-                          <span>{stopAmbience.label}</span>
-                        </span>
-
-                        {(item.allowsDogs || isPetFilterActive) && (
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 flex items-center gap-1">
-                            <span>🐾</span>
-                            <span>Pet-Friendly</span>
-                          </span>
-                        )}
-
-                        {item.accessibilityOptions?.isConfirmedAccessible && (
-                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-300 flex items-center gap-1" title="Acceso para movilidad reducida confirmado por Places API">
-                            <span>♿</span>
-                            <span>Accesible</span>
-                          </span>
-                        )}
-                      </div>
-
-                      <h5 className="text-xs sm:text-sm font-bold text-white truncate mt-1">
-                        {item.placeName}
-                      </h5>
-
-                      <p className="text-[11px] text-gray-400 truncate">
-                        {item.placeAddress || 'Dirección no especificada'}
-                      </p>
-
-                      <div className="flex items-center gap-2 mt-1">
-                        {item.location && (
-                          <span className="text-[10px] text-gray-400">
-                            ⭐ {item.rating ? `${item.rating.toFixed(1)} / 5` : 'Sin valoraciones suficientes'}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Acciones directas por parada */}
-                  <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-1.5 flex-wrap">
-                    <a
-                      href={singleNavUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="py-1 px-2.5 rounded-lg bg-[#FF5E2B]/15 hover:bg-[#FF5E2B] text-[#FF5E2B] hover:text-white transition text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                      title="Abrir parada en Google Maps"
-                    >
-                      <span>🧭 Iniciar Ruta</span>
-                    </a>
-
-                    <div className="flex items-center gap-1">
-                      {item.phoneNumber ? (
-                        <a
-                          href={`tel:${item.phoneNumber}`}
-                          className="py-1 px-2 rounded-lg bg-white/5 hover:bg-emerald-500/20 text-gray-300 hover:text-emerald-300 transition text-[10px] font-semibold flex items-center gap-1 border border-white/5"
-                          title={`Llamar a ${item.placeName}`}
-                        >
-                          <span>📞 Llamar</span>
-                        </a>
-                      ) : (
-                        <span className="py-1 px-1.5 text-gray-500 text-[10px] cursor-default" title="Teléfono no listado">
-                          📞 Sin tlf.
-                        </span>
-                      )}
-
-                      {item.websiteUri ? (
-                        <a
-                          href={item.websiteUri}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="py-1 px-2 rounded-lg bg-white/5 hover:bg-sky-500/20 text-gray-300 hover:text-sky-300 transition text-[10px] font-semibold flex items-center gap-1 border border-white/5"
-                          title="Página web oficial"
-                        >
-                          <span>🌐 Sitio Web</span>
-                        </a>
-                      ) : (
-                        <a
-                          href={`https://www.google.com/search?q=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="py-1 px-2 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition text-[10px] font-medium flex items-center gap-1"
-                          title="Buscar información oficial en Google"
-                        >
-                          <span>🌐 Info</span>
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        {/* Línea de Tiempo Vertical y Ruta Encadenada Multi-Parada */}
+        <ChainedTimeline
+          schedule={activePlan.schedule}
+          userLocation={searchCriteria?.location}
+          planTitle={activePlan.title}
+          energyRequired={activePlan.energyRequired}
+          isPetFilterActive={isPetFilterActive}
+        />
 
         {/* Acciones Principales: Iniciar Ruta Completa & Ver Ficha Editorial (EXPERIENCE) */}
         <div className="pt-2 space-y-2.5">

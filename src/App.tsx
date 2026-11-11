@@ -51,7 +51,7 @@ const App: React.FC = () => {
 
   return (
     <AppProvider>
-      <div className="w-screen h-screen bg-[#0B0C0E] font-sans flex flex-col items-center justify-center sm:p-3 md:p-4 text-white overflow-hidden">
+      <div className="w-full h-full min-h-[100dvh] max-h-[100dvh] bg-[#0B0C0E] font-sans flex flex-col items-center justify-center sm:p-3 md:p-4 text-white overflow-hidden">
         {quotaExceeded && (
           <div className="w-full max-w-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 px-4 py-2 text-xs text-center sticky top-0 z-50 shadow-sm rounded-t-xl backdrop-blur-md">
             <span>

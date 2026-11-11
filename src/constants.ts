@@ -1,7 +1,32 @@
-import { Mood, Entorno, Company, Mobility, BudgetOption } from './types';
+import { Mood, Entorno, Company, Mobility, BudgetOption, ExperienceMode } from './types';
 
 export type MobilityOption = Mobility;
 export type EntornoOption = Entorno;
+
+export interface ExperienceModeOption {
+  id: ExperienceMode;
+  label: string;
+  badge: string;
+  icon: string;
+  subtext: string;
+}
+
+export const EXPERIENCE_MODE_OPTIONS: ExperienceModeOption[] = [
+  {
+    id: 'chained',
+    label: 'Ruta Encadenada (2-3 Paradas)',
+    badge: 'Media Jornada • ≤ 15 min a pie',
+    icon: '🔗',
+    subtext: 'Itinerario secuencial coherente de 3 paradas conectadas a pie.',
+  },
+  {
+    id: 'single',
+    label: 'Plan Único',
+    badge: '1 Experiencia Clave',
+    icon: '🎯',
+    subtext: 'Recomendación destacada individual para disfrutar a tu ritmo.',
+  },
+];
 
 export const MOOD_OPTIONS: Mood[] = [
   { label: 'Relajado', icon: '😌' },

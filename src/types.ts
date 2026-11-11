@@ -5,6 +5,9 @@ export interface UserLocation {
   lng: number;
   cityName?: string;
   formattedAddress?: string;
+  neighborhood?: string;
+  isGps?: boolean;
+  accuracyMeters?: number;
 }
 
 export interface Mood {
@@ -40,6 +43,8 @@ export interface UserAffinities {
   lastUpdated: string;
 }
 
+export type ExperienceMode = 'single' | 'chained';
+
 export interface Mobility {
   label: string;
   icon: string;
@@ -58,6 +63,11 @@ export interface SearchCriteria {
   user_mood_description?: string;
   budget?: string; // '€ Económico' | '€€ Normal' | '€€€ Especial'
   localTime?: string; // Formato hora local e.g. "14:30" o ISO
+  isGpsActive?: boolean;
+  searchRadiusKm?: number;
+  latitude?: number;
+  longitude?: number;
+  allowSurroundings?: boolean;
   timePeriod?: 'morning' | 'midday' | 'afternoon' | 'night';
   userAffinities?: {
     topEnvironments: string[];
@@ -69,6 +79,7 @@ export interface SearchCriteria {
     summaryNarrative?: string;
   };
   isSurpriseMe?: boolean;
+  experienceMode?: ExperienceMode;
 }
 
 export interface PlaceAccessibilityOptions {
@@ -119,6 +130,8 @@ export interface ScheduleItem {
   allowsDogs?: boolean;
   ambience?: 'calm' | 'lively';
   accessibilityOptions?: PlaceAccessibilityOptions;
+  order?: number;
+  walkingTimeFromPrevious?: string;
 }
 
 export interface SavedExperience {
@@ -152,6 +165,7 @@ export interface ProposalPlan extends PlanDetails {
   coverImage?: string;
   accessibilityInfo?: string; // e.g. "Acceso peatonal accesible y sin desniveles pronunciados"
   isPlanB?: boolean;
+  experienceMode?: ExperienceMode;
 }
 
 export interface GeneratedItinerary {

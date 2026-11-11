@@ -6,11 +6,13 @@ import {
   BUDGET_OPTIONS,
   ENTORNO_OPTIONS,
   AVAILABLE_TIME_OPTIONS,
+  EXPERIENCE_MODE_OPTIONS,
   type AvailableTimeOption,
 } from '../constants';
 import { analyzeMoodFromText } from '../services/geminiService';
 import { useAppContext } from '../context/AppContext';
 import SavedPlansModal from './SavedPlansModal';
+import GpsLocationWidget from './GpsLocationWidget';
 
 interface NaturalMoodOption extends Mood {
   phrase: string;
@@ -98,6 +100,7 @@ const HomePage: React.FC = () => {
     mobility: selectedMobility,
     intensity,
     availableTime,
+    experienceMode,
   } = formState;
 
   const [voiceInputStatus, setVoiceInputStatus] = useState<
@@ -217,6 +220,9 @@ const HomePage: React.FC = () => {
     const activeCompany = selectedCompany || COMPANY_OPTIONS[0];
     const activeMobility = selectedMobility || MOBILITY_OPTIONS[0];
 
+    const isGpsActive = Boolean(userLocation.isGps);
+    const searchRadiusKm = activeEntorno.label === 'Escapada' ? 15 : 5;
+
     const criteria: SearchCriteria = {
       user_mood: selectedMood.label,
       environment: activeEntorno.label,
@@ -224,12 +230,20 @@ const HomePage: React.FC = () => {
       budget: selectedBudget ? `${selectedBudget.symbol} ${selectedBudget.label}` : '€€ Normal',
       mobility: activeMobility.label,
       availableTime: availableTime || '2-4h',
+      experienceMode: experienceMode || 'chained',
       cityName: userLocation.cityName,
+      isGpsActive,
+      searchRadiusKm,
+      latitude: userLocation.lat,
+      longitude: userLocation.lng,
       location: {
         lat: userLocation.lat,
         lng: userLocation.lng,
         cityName: userLocation.cityName,
         formattedAddress: userLocation.formattedAddress,
+        neighborhood: userLocation.neighborhood,
+        isGps: isGpsActive,
+        accuracyMeters: userLocation.accuracyMeters,
       },
       intensity: intensity,
       ...(moodDescription.trim() && { user_mood_description: moodDescription.trim() }),
@@ -247,7 +261,7 @@ const HomePage: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-[#0F1015] text-white animate-fade-in overflow-hidden select-none">
       {/* Cabecera Editorial */}
-      <header className="px-5 py-4 bg-[#0F1015]/90 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between sticky top-0 z-20">
+      <header className="px-5 py-3.5 sm:py-4 bg-[#0F1015]/90 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between sticky top-0 z-20 safe-pt">
         <div className="flex items-center gap-2.5">
           <span className="w-2.5 h-2.5 rounded-full bg-[#FF5E2B] shadow-[0_0_12px_#FF5E2B]"></span>
           <span className="text-xs uppercase tracking-[0.2em] font-extrabold text-white">
@@ -274,33 +288,15 @@ const HomePage: React.FC = () => {
             )}
           </button>
 
-          {userLocation && (
-            <div className="flex items-center gap-1.5">
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#FF5E2B]/10 border border-[#FF5E2B]/20 text-[11px] text-gray-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#FF5E2B] animate-pulse"></span>
-                <span className="font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
-                  {userLocation.cityName || userLocation.formattedAddress || 'Ubicación'}
-                </span>
-                <span className="text-[10px] text-[#FF5E2B] font-mono hidden sm:inline">&le; 5 km</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setUserLocation(null)}
-                className="text-[11px] font-medium text-gray-300 hover:text-white bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 px-2.5 py-1 rounded-full transition flex items-center gap-1 cursor-pointer"
-                title="Cambiar municipio o ciudad"
-              >
-                <svg className="w-3 h-3 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                </svg>
-                <span>Cambiar</span>
-              </button>
-            </div>
-          )}
+          <GpsLocationWidget compact />
         </div>
       </header>
 
       {/* Contenido Principal con Scroll Suave */}
       <main className="flex-grow overflow-y-auto px-5 md:px-8 py-6 space-y-7 scrollbar-hide text-left max-w-4xl mx-auto w-full">
+        {/* Widget de Geolocalización GPS en Tiempo Real & Fallback Suave */}
+        <GpsLocationWidget />
+
         {/* Banner de Aprendizaje Progresivo (Mood Intelligence) */}
         {userAffinities.totalSearches > 0 && (
           <div
@@ -423,11 +419,84 @@ const HomePage: React.FC = () => {
           </div>
         </section>
 
-        {/* Paso 2: Selector de Entorno Requerido [Mar, Montaña, Ciudad, Río, Pueblo] */}
+        {/* Paso 2: Selector de Modo de Experiencia: Plan Único vs Ruta Encadenada (2-3 Paradas) */}
+        <section className="space-y-3.5">
+          <div className="flex items-center justify-between flex-wrap gap-1">
+            <div>
+              <span className="text-[10px] uppercase tracking-widest font-bold text-[#FF5E2B]">
+                Paso 02 • Modo de Experiencia
+              </span>
+              <h2 className="text-xl md:text-2xl font-black text-white tracking-tight mt-0.5">
+                ¿Cómo prefieres vivir tu experiencia?
+              </h2>
+            </div>
+            <span className="text-[10px] text-gray-400 bg-white/[0.04] px-2.5 py-0.5 rounded-full border border-white/5">
+              Curaduría adaptativa
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {EXPERIENCE_MODE_OPTIONS.map((opt) => {
+              const isSelected = (experienceMode || 'chained') === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setFormState({ experienceMode: opt.id })}
+                  className={`p-4 rounded-2xl border text-left transition-all duration-300 cursor-pointer flex flex-col justify-between gap-3 transform active:scale-[0.99] ${
+                    isSelected
+                      ? 'bg-[#FF5E2B]/15 border-[#FF5E2B] shadow-[0_0_24px_rgba(255,94,43,0.22)] scale-[1.01]'
+                      : 'bg-white/[0.03] border-white/[0.08] hover:border-white/20 hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`text-2xl p-2 rounded-xl flex-shrink-0 transition-all ${
+                        isSelected ? 'bg-[#FF5E2B]/20 text-white' : 'bg-white/[0.05]'
+                      }`}>
+                        {opt.icon}
+                      </span>
+                      <div>
+                        <h3 className={`text-xs sm:text-sm font-black tracking-tight ${
+                          isSelected ? 'text-[#FF5E2B]' : 'text-white'
+                        }`}>
+                          {opt.label}
+                        </h3>
+                        <span className={`text-[10px] font-bold px-2 py-0.2 rounded-full border inline-block mt-0.5 ${
+                          isSelected
+                            ? 'bg-[#FF5E2B]/20 border-[#FF5E2B]/40 text-white'
+                            : 'bg-white/5 border-white/10 text-gray-400'
+                        }`}>
+                          {opt.badge}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                      isSelected
+                        ? 'border-[#FF5E2B] bg-[#FF5E2B] text-white'
+                        : 'border-white/20'
+                    }`}>
+                      {isSelected && (
+                        <span className="text-[10px] font-black">✓</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-gray-300 leading-relaxed">
+                    {opt.subtext}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Paso 3: Selector de Entorno Requerido [Mar, Montaña, Ciudad, Río, Pueblo] */}
         <section className="space-y-3.5">
           <div>
             <span className="text-[10px] uppercase tracking-widest font-bold text-[#FF5E2B]">
-              Paso 02 • Entorno Deseado
+              Paso 03 • Entorno Deseado
             </span>
             <h2 className="text-xl font-black text-white tracking-tight mt-0.5">
               ¿En qué paisaje te apetece estar?
@@ -666,7 +735,7 @@ const HomePage: React.FC = () => {
       </main>
 
       {/* Botón de Enviar (Generar las 3 propuestas del Módulo Discover) */}
-      <footer className="p-4 md:p-5 bg-[#0F1015]/95 border-t border-white/[0.08] backdrop-blur-md">
+      <footer className="p-4 md:p-5 bg-[#0F1015]/95 border-t border-white/[0.08] backdrop-blur-md safe-pb">
         <form onSubmit={handleSubmit}>
           <button
             type="submit"

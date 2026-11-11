@@ -160,7 +160,7 @@ const ItineraryPage: React.FC = () => {
   return (
     <div className="flex flex-col h-full bg-[#0F1015] text-white animate-fade-in overflow-hidden select-none">
       {/* Top Header */}
-      <header className="px-5 py-3.5 bg-[#0F1015]/95 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between sticky top-0 z-20">
+      <header className="px-4 sm:px-5 py-3 sm:py-3.5 bg-[#0F1015]/95 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between sticky top-0 z-20 safe-pt">
         <div className="flex items-center gap-2">
           <button
             onClick={pageMode === 'detail' ? () => setPageMode('proposals') : handleBackToHome}
@@ -284,7 +284,7 @@ const ItineraryPage: React.FC = () => {
             </button>
 
             {/* Quick multi-stop route buttons on mobile map */}
-            <div className="absolute bottom-5 left-4 right-4 z-10 flex gap-2">
+            <div className="absolute bottom-5 left-4 right-4 z-10 flex gap-2 safe-mb">
               <a
                 href={drivingRouteUrl}
                 target="_blank"

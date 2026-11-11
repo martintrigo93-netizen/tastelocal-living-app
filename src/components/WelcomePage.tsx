@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { geocodeAddressProxy } from '../services/apiProxy';
+import { requestCurrentLocation } from '../services/geolocationService';
 import { UserLocation } from '../types';
 import SavedPlansModal from './SavedPlansModal';
 import PWAInstallButton from './PWAInstallButton';
@@ -58,68 +59,44 @@ const WelcomePage: React.FC = () => {
       return;
     }
 
-    // 3. Detectar GPS en tiempo real o fallback
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          const coords = {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-          };
-          setDetectedCoords(coords);
-          setUserLocation(coords);
-          await handleSurpriseMe(coords);
-        },
-        async () => {
-          const fallback = { lat: 40.4168, lng: -3.7038 };
-          setUserLocation(fallback);
-          await handleSurpriseMe(fallback);
-        },
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 60000 }
-      );
+    // 3. Detectar GPS en tiempo real o fallback con geocodificación inversa
+    const gpsRes = await requestCurrentLocation((msg) => setFeedbackMessage(msg));
+    if (gpsRes.status === 'granted' && gpsRes.location) {
+      setDetectedCoords(gpsRes.location);
+      setUserLocation(gpsRes.location);
+      await handleSurpriseMe(gpsRes.location);
       return;
     }
 
-    const fallback = { lat: 40.4168, lng: -3.7038 };
+    const fallback = gpsRes.location || { lat: 40.4168, lng: -3.7038, cityName: 'Madrid', formattedAddress: 'Madrid' };
     setUserLocation(fallback);
     await handleSurpriseMe(fallback);
   };
 
   // Detectar ubicación actual vía Geolocation API
-  const handleDetectLocation = () => {
+  const handleDetectLocation = async () => {
     setStatus('locating');
-    setFeedbackMessage('');
+    setFeedbackMessage('Conectando con el sensor GPS y detectando municipio...');
 
-    if (!navigator.geolocation) {
-      setFeedbackMessage('Tu dispositivo no soporta geolocalización directa. Puedes buscar tu municipio escribiéndolo abajo.');
+    const res = await requestCurrentLocation((msg) => setFeedbackMessage(msg));
+    if (res.status === 'granted' && res.location) {
+      setDetectedCoords(res.location);
+      setSelectedCityName(res.location.cityName || 'Mi ubicación actual');
+      setCustomQuery('');
+      setStatus('idle');
+      setFeedbackMessage(`Ubicación GPS detectada: ${res.location.cityName || 'Fijada con éxito'}`);
+      setTimeout(() => setFeedbackMessage(''), 3500);
+    } else if (res.status === 'denied') {
       setStatus('error');
-      return;
+      setFeedbackMessage(
+        res.errorMessage || 'Permiso de ubicación denegado en el navegador. Puedes escribir cualquier municipio abajo.'
+      );
+    } else {
+      setStatus('error');
+      setFeedbackMessage(
+        res.errorMessage || 'No pudimos acceder a tu ubicación precisa. Escribe tu municipio o pulsa una ciudad.'
+      );
     }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const coords = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        };
-        setDetectedCoords(coords);
-        setSelectedCityName('Mi ubicación actual');
-        setCustomQuery('');
-        setStatus('idle');
-        setFeedbackMessage('Ubicación detectada con precisión');
-        setTimeout(() => setFeedbackMessage(''), 3500);
-      },
-      (error) => {
-        console.warn('Geolocation notice:', error?.message || `code ${error?.code}`);
-        let msg = 'No pudimos acceder a tu ubicación precisa. Escribe tu municipio o pulsa una ciudad.';
-        if (error.code === error.PERMISSION_DENIED) {
-          msg = 'Permiso de ubicación desactivado. Puedes escribir cualquier municipio abajo.';
-        }
-        setFeedbackMessage(msg);
-        setStatus('error');
-      },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
-    );
   };
 
   // Seleccionar ciudad rápida
@@ -199,9 +176,9 @@ const WelcomePage: React.FC = () => {
         <div className="absolute inset-0 bg-radial from-transparent via-[#0F1015]/60 to-[#0F1015]"></div>
       </div>
 
-      <div className="relative z-10 flex flex-col justify-between h-full p-6 sm:p-8 md:p-10">
+      <div className="relative z-10 flex flex-col justify-between h-full p-5 sm:p-8 md:p-10 safe-pt safe-pb overflow-y-auto scrollbar-hide">
         {/* Cabecera Editorial */}
-        <header className="flex items-center justify-between pt-1">
+        <header className="flex items-center justify-between pt-1 flex-shrink-0">
           <div className="flex items-center gap-2.5">
             <span className="w-2.5 h-2.5 rounded-full bg-[#FF5E2B] shadow-[0_0_12px_#FF5E2B]"></span>
             <span className="text-[11px] uppercase tracking-[0.22em] font-bold text-white">

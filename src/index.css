@@ -7,6 +7,10 @@
   --color-coral: #FF5E2B;
   --color-coral-hover: #E84D1C;
   --color-white: #FFFFFF;
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
 }
 
 body {
@@ -17,11 +21,36 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
 html, body, #root {
   min-height: 100%;
   height: 100%;
+}
+
+/* Safe Area Utility Classes for PWA and Mobile Devices */
+.safe-pt {
+  padding-top: max(env(safe-area-inset-top, 0px), 0px);
+}
+
+.safe-pb {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0px);
+}
+
+.safe-pl {
+  padding-left: max(env(safe-area-inset-left, 0px), 0px);
+}
+
+.safe-pr {
+  padding-right: max(env(safe-area-inset-right, 0px), 0px);
+}
+
+.safe-mb {
+  margin-bottom: max(env(safe-area-inset-bottom, 0px), 0px);
 }
 
 button, input, textarea, select {
@@ -37,16 +66,16 @@ button, input, textarea, select {
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-fade-in-stagger {
-  animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes subtlePulse {
@@ -56,4 +85,39 @@ button, input, textarea, select {
 
 .animate-subtle-pulse {
   animation: subtlePulse 5s infinite ease-in-out;
+}
+
+/* Skeleton Shimmer in Dark Onyx and Coral Glow */
+@keyframes skeletonShimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.skeleton-shimmer::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.05) 20%,
+    rgba(255, 94, 43, 0.12) 50%,
+    rgba(255, 255, 255, 0.05) 80%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: skeletonShimmer 1.8s infinite;
+  content: '';
 }

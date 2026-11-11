@@ -28,6 +28,7 @@ import {
   BUDGET_OPTIONS,
   ENTORNO_OPTIONS,
 } from '../constants';
+import { getLastSavedLocation, saveLastLocation } from '../services/geolocationService';
 
 export interface FormState {
   mood: Mood | null;
@@ -38,6 +39,7 @@ export interface FormState {
   mobility: MobilityOption | null;
   intensity: number;
   availableTime: '< 2h' | '2-4h' | 'Día completo';
+  experienceMode: 'single' | 'chained';
 }
 
 export interface AppState {
@@ -80,6 +82,7 @@ const initialFormState: FormState = {
   mobility: MOBILITY_OPTIONS.find((m) => m.label === 'A pie') || MOBILITY_OPTIONS[0],
   intensity: 5,
   availableTime: '2-4h',
+  experienceMode: 'chained',
 };
 
 // Helper strictly guaranteeing verified coordinates and addresses from Google Places
@@ -181,16 +184,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [isSavedPlansModalOpen, setIsSavedPlansModalOpen] = useState<boolean>(false);
 
-  const [state, setState] = useState<AppState>({
-    page: 'home',
-    itinerary: null,
-    weather: null,
-    searchCriteria: null,
-    isLoading: false,
-    loadingMessage: '',
-    error: null,
-    userLocation: null,
-    formState: initialFormState,
+  const [state, setState] = useState<AppState>(() => {
+    const cachedLoc = getLastSavedLocation();
+    return {
+      page: 'home',
+      itinerary: null,
+      weather: null,
+      searchCriteria: null,
+      isLoading: false,
+      loadingMessage: '',
+      error: null,
+      userLocation: cachedLoc,
+      formState: initialFormState,
+    };
   });
 
   // Helper para registrar y actualizar afinidades locales (Mood Intelligence)
@@ -356,6 +362,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const setUserLocation = (location: UserLocation | null) => {
+    if (location) {
+      saveLastLocation(location);
+    }
     setState((prevState) => ({ ...prevState, userLocation: location }));
   };
 
@@ -402,10 +411,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         userAffinities.totalSavedExperiences > 0 ? `${userAffinities.totalSavedExperiences} planes guardados` : null,
       ].filter(Boolean);
 
+      const isGpsActive = Boolean(targetLocation.isGps || criteria.isGpsActive);
+      const searchRadiusKm = criteria.searchRadiusKm || (criteria.environment === 'Escapada' ? 15 : 5);
+
       const enrichedCriteria: SearchCriteria = {
         ...criteria,
         location: targetLocation,
+        cityName: targetLocation.cityName || criteria.cityName,
         localTime,
+        isGpsActive,
+        searchRadiusKm,
+        latitude: targetLocation.lat,
+        longitude: targetLocation.lng,
+        experienceMode: criteria.experienceMode || state.formState.experienceMode || 'chained',
         userAffinities: {
           topEnvironments,
           topMoods,
@@ -568,6 +586,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         company: 'En solitario',
         mobility: 'A pie',
         location: loc,
+        cityName: loc.cityName,
+        isGpsActive: Boolean(loc.isGps),
+        searchRadiusKm: 5,
+        latitude: loc.lat,
+        longitude: loc.lng,
         intensity: 6,
         budget: '€€ Normal',
         isSurpriseMe: true,

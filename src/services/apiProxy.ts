@@ -29,6 +29,45 @@ export async function geocodeAddressProxy(query: string): Promise<UserLocation |
   }
 }
 
+export async function reverseGeocodeProxy(lat: number, lng: number): Promise<{
+  cityName?: string;
+  neighborhood?: string;
+  formattedAddress?: string;
+  location: UserLocation;
+}> {
+  try {
+    const res = await fetch(`${BASE_API_URL}/api/geocode/reverse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    console.warn('Reverse geocode primary attempt notice, trying fallback /api/places/reverse-geocode:', err);
+  }
+
+  try {
+    const fallbackRes = await fetch(`${BASE_API_URL}/api/places/reverse-geocode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lng }),
+    });
+    if (fallbackRes.ok) {
+      return await fallbackRes.json();
+    }
+  } catch (err2) {
+    console.warn('Fallback reverse geocode error:', err2);
+  }
+
+  return {
+    cityName: 'Tu ubicación',
+    formattedAddress: `Lat ${lat.toFixed(4)}, Lng ${lng.toFixed(4)}`,
+    location: { lat, lng, cityName: 'Tu ubicación' },
+  };
+}
+
 export async function analyzeMoodProxy(text: string): Promise<Mood> {
   const res = await fetch(`${BASE_API_URL}/api/gemini/analyze-mood`, {
     method: 'POST',
@@ -47,12 +86,33 @@ export async function generateItineraryProxy(payload: {
   criteria: SearchCriteria;
   weather: WeatherInfo | null;
   places: Plan[];
+  latitude?: number;
+  longitude?: number;
+  searchRadiusKm?: number;
+  gpsLocation?: {
+    latitude: number;
+    longitude: number;
+    searchRadiusKm: number;
+  };
 }): Promise<GeneratedItinerary> {
+  const lat = payload.latitude ?? payload.criteria.location?.lat;
+  const lng = payload.longitude ?? payload.criteria.location?.lng;
+  const radius = payload.searchRadiusKm ?? payload.criteria.searchRadiusKm ?? 5;
+  const isGpsActive = Boolean(payload.criteria.isGpsActive || payload.criteria.location?.isGps || payload.gpsLocation);
+
+  const fullPayload = {
+    ...payload,
+    latitude: lat,
+    longitude: lng,
+    searchRadiusKm: radius,
+    gpsLocation: isGpsActive ? { latitude: lat, longitude: lng, searchRadiusKm: radius } : undefined,
+  };
+
   try {
     const res = await fetch(`${BASE_API_URL}/api/gemini/generate-itinerary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(fullPayload),
     });
     if (res.ok) {
       return (await res.json()) as GeneratedItinerary;
@@ -66,7 +126,7 @@ export async function generateItineraryProxy(payload: {
     const fallbackRes = await fetch(`${BASE_API_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(fullPayload),
     });
     if (fallbackRes.ok) {
       return (await fallbackRes.json()) as GeneratedItinerary;
