@@ -14,8 +14,14 @@ import {
   type WeatherInfo,
   type SavedExperience,
   type UserAffinities,
+  type VisitedPlace,
+  type UserTasteProfile,
+  type SwipeCardItem,
+  type GroupSwipeSession,
 } from '../types';
 import { generateItinerary } from '../services/geminiService';
+import { generateGroupDeckProxy, getGroupSessionProxy } from '../services/apiProxy';
+import { decodeGroupSessionPayload } from '../utils/groupSessionCodec';
 import { findPotentialPlaces } from '../services/googleMapsService';
 import { getEventBasedSearchQueries } from '../services/eventsService';
 import { getWeather } from '../services/weatherService';
@@ -40,6 +46,7 @@ export interface FormState {
   intensity: number;
   availableTime: '< 2h' | '2-4h' | 'Día completo';
   experienceMode: 'single' | 'chained';
+  onlyOpenNow: boolean;
 }
 
 export interface AppState {
@@ -57,18 +64,35 @@ export interface AppState {
 export interface AppContextType extends AppState {
   savedPlans: SavedExperience[];
   userAffinities: UserAffinities;
+  visitedPlaces: VisitedPlace[];
+  userTasteProfile: UserTasteProfile;
   isSavedPlansModalOpen: boolean;
   setIsSavedPlansModalOpen: (open: boolean) => void;
+  isPreferencesModalOpen: boolean;
+  setIsPreferencesModalOpen: (open: boolean) => void;
   savePlan: (plan: ProposalPlan) => void;
   removeSavedPlan: (planId: string) => void;
   clearSavedPlans: () => void;
   isPlanSaved: (planId: string) => boolean;
   openSavedPlan: (saved: SavedExperience) => void;
+  toggleVisitedPlace: (place: { id: string; name: string; address?: string; cityName?: string }) => boolean;
+  removeVisitedPlace: (placeId: string, placeName?: string) => void;
+  clearVisitedPlaces: () => void;
+  isPlaceVisited: (placeId?: string, placeName?: string) => boolean;
+  toggleManualRestriction: (restriction: string) => void;
+  resetTasteProfile: () => void;
   setUserLocation: (location: UserLocation | null) => void;
   setFormState: (newState: Partial<FormState>) => void;
   handleGenerateItinerary: (criteria: SearchCriteria) => Promise<void>;
   handleSurpriseMe: (locationOverride?: UserLocation) => Promise<void>;
   handleBackToHome: () => void;
+  groupDeck: SwipeCardItem[];
+  groupDeckCity: string;
+  groupLoading: boolean;
+  groupError: string | null;
+  incomingGroupSession: GroupSwipeSession | null;
+  handleStartGroupMode: (locationOverride?: UserLocation) => Promise<void>;
+  handleExitGroupMode: () => void;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -83,6 +107,7 @@ const initialFormState: FormState = {
   intensity: 5,
   availableTime: '2-4h',
   experienceMode: 'chained',
+  onlyOpenNow: false,
 };
 
 // Helper strictly guaranteeing verified coordinates and addresses from Google Places
@@ -111,11 +136,16 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
 
       return {
         ...item,
-        placeId: matchedPlace.id,
-        placeName: matchedPlace.name,
+        placeId: matchedPlace.id || item.placeId,
+        placeName: matchedPlace.name || item.placeName,
         placeAddress: matchedPlace.address || item.placeAddress,
-        location: matchedPlace.location,
+        location: matchedPlace.location || item.location,
         rating: matchedPlace.rating ?? item.rating,
+        userRatingsTotal: matchedPlace.userRatingsTotal ?? item.userRatingsTotal,
+        priceLevel: matchedPlace.priceLevel ?? item.priceLevel,
+        isOpenNow: matchedPlace.isOpenNow ?? item.isOpenNow,
+        photoUrl: matchedPlace.photoUrl || item.photoUrl,
+        isLocalSuggestion: matchedPlace.isLocalSuggestion ?? item.isLocalSuggestion,
         phoneNumber: matchedPlace.phoneNumber || item.phoneNumber,
         websiteUri: matchedPlace.websiteUri || item.websiteUri,
         allowsDogs: matchedPlace.allowsDogs ?? item.allowsDogs,
@@ -134,6 +164,8 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
 
 const SAVED_PLANS_KEY = 'tastelocal_saved_plans_v1';
 const AFFINITIES_KEY = 'tastelocal_user_affinities_v1';
+const VISITED_PLACES_KEY = 'visitedPlaces';
+const TASTE_PROFILE_KEY = 'userTasteProfile';
 
 const defaultAffinities: UserAffinities = {
   favoriteEnvironments: {},
@@ -145,6 +177,62 @@ const defaultAffinities: UserAffinities = {
   lastUpdated: new Date().toISOString(),
 };
 
+const defaultTasteProfile: UserTasteProfile = {
+  preferredCategories: {},
+  preferredMoods: {},
+  preferredEnergyLevels: [],
+  averageEnergy: 5.0,
+  recurringPreferences: [],
+  manualRestrictions: [],
+  summary: 'Explorador local equilibrado en construcción silenciosa.',
+  totalInteractions: 0,
+  lastUpdated: new Date().toISOString(),
+};
+
+const buildTasteProfileSummary = (profile: {
+  preferredCategories: Record<string, number>;
+  preferredMoods: Record<string, number>;
+  averageEnergy: number;
+  recurringPreferences: string[];
+  manualRestrictions: string[];
+  totalInteractions: number;
+}): string => {
+  if (profile.totalInteractions === 0 && profile.manualRestrictions.length === 0) {
+    return 'Explorador local buscando experiencias auténticas de barrio.';
+  }
+
+  const traits: string[] = [];
+
+  if (profile.averageEnergy <= 4.5) {
+    traits.push('ambientes tranquilos y relajados');
+  } else if (profile.averageEnergy >= 7.2) {
+    traits.push('propuestas activas y dinámicas');
+  } else {
+    traits.push('ritmo equilibrado sin prisas');
+  }
+
+  const topCategories = Object.entries(profile.preferredCategories)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2)
+    .map(([cat]) => cat.toLowerCase());
+
+  if (topCategories.length > 0) {
+    traits.push(`entornos ${topCategories.join(' y ')}`);
+  }
+
+  profile.recurringPreferences.forEach((pref) => {
+    if (!traits.includes(pref.toLowerCase())) {
+      traits.push(pref.toLowerCase());
+    }
+  });
+
+  let summary = `El usuario suele preferir ${traits.slice(0, 4).join(', ')}`;
+  if (profile.manualRestrictions.length > 0) {
+    summary += `. Restricciones/preferencias activas: ${profile.manualRestrictions.join(', ')}`;
+  }
+  return summary + '.';
+};
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [savedPlans, setSavedPlans] = useState<SavedExperience[]>(() => {
     if (typeof window === 'undefined') return [];
@@ -154,6 +242,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (e) {
       console.warn('Error reading saved plans from localStorage:', e);
       return [];
+    }
+  });
+
+  const [visitedPlaces, setVisitedPlaces] = useState<VisitedPlace[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem(VISITED_PLACES_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      console.warn('Error reading visitedPlaces from localStorage:', e);
+      return [];
+    }
+  });
+
+  const [userTasteProfile, setUserTasteProfile] = useState<UserTasteProfile>(() => {
+    if (typeof window === 'undefined') return defaultTasteProfile;
+    try {
+      const raw = localStorage.getItem(TASTE_PROFILE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          ...defaultTasteProfile,
+          ...parsed,
+          preferredCategories: parsed.preferredCategories || {},
+          preferredMoods: parsed.preferredMoods || {},
+          preferredEnergyLevels: Array.isArray(parsed.preferredEnergyLevels) ? parsed.preferredEnergyLevels : [],
+          recurringPreferences: Array.isArray(parsed.recurringPreferences) ? parsed.recurringPreferences : [],
+          manualRestrictions: Array.isArray(parsed.manualRestrictions) ? parsed.manualRestrictions : [],
+        };
+      }
+      return defaultTasteProfile;
+    } catch (e) {
+      console.warn('Error reading userTasteProfile from localStorage:', e);
+      return defaultTasteProfile;
     }
   });
 
@@ -183,6 +305,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [isSavedPlansModalOpen, setIsSavedPlansModalOpen] = useState<boolean>(false);
+  const [isPreferencesModalOpen, setIsPreferencesModalOpen] = useState<boolean>(false);
+  const [groupDeck, setGroupDeck] = useState<SwipeCardItem[]>([]);
+  const [groupDeckCity, setGroupDeckCity] = useState<string>('');
+  const [groupLoading, setGroupLoading] = useState<boolean>(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [incomingGroupSession, setIncomingGroupSession] = useState<GroupSwipeSession | null>(null);
 
   const [state, setState] = useState<AppState>(() => {
     const cachedLoc = getLastSavedLocation();
@@ -198,6 +326,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       formState: initialFormState,
     };
   });
+
+  // FASE 7: Detectar si se abrió un enlace compartido de votación en pareja/grupo (?gs= o ?g=)
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const gsId = params.get('gs');
+    const encodedPayload = params.get('g');
+    if (!gsId && !encodedPayload) return;
+
+    let cancelled = false;
+    (async () => {
+      let hydrated: GroupSwipeSession | null = null;
+      if (gsId) {
+        hydrated = await getGroupSessionProxy(gsId);
+      }
+      if (!hydrated && encodedPayload) {
+        hydrated = decodeGroupSessionPayload(encodedPayload);
+      }
+      if (!cancelled && hydrated && hydrated.deck.length > 0) {
+        setIncomingGroupSession(hydrated);
+        setGroupDeck(hydrated.deck);
+        setGroupDeckCity(hydrated.cityName);
+        setGroupError(null);
+        setGroupLoading(false);
+        setState((prev) => ({
+          ...prev,
+          page: 'group',
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Helper para registrar y actualizar afinidades locales (Mood Intelligence)
   const recordAffinities = useCallback(
@@ -266,9 +429,214 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         return updated;
       });
+
+      // Aprendizaje silencioso en userTasteProfile
+      setUserTasteProfile((prev) => {
+        const weight = params.isFavoriteSave ? 2 : 1;
+        const updatedCats = { ...prev.preferredCategories };
+        if (params.environment) {
+          updatedCats[params.environment] = (updatedCats[params.environment] || 0) + weight;
+        }
+
+        const updatedMoods = { ...prev.preferredMoods };
+        if (params.moodLabel) {
+          updatedMoods[params.moodLabel] = (updatedMoods[params.moodLabel] || 0) + weight;
+        }
+
+        const updatedEnergies =
+          typeof params.intensity === 'number'
+            ? [...prev.preferredEnergyLevels, Math.round(params.intensity)].slice(-25)
+            : prev.preferredEnergyLevels;
+
+        const averageEnergy =
+          updatedEnergies.length > 0
+            ? Math.round((updatedEnergies.reduce((acc, v) => acc + v, 0) / updatedEnergies.length) * 10) / 10
+            : prev.averageEnergy;
+
+        const recurringSet = new Set(prev.recurringPreferences);
+        if (params.company === 'Con mascota') {
+          recurringSet.add('Opciones pet-friendly');
+        }
+        if (params.company === 'En Familia') {
+          recurringSet.add('Planes accesibles en familia');
+        }
+        if (params.company === 'Con Niños') {
+          recurringSet.add('Espacios family-friendly con niños');
+        }
+        if (params.environment === 'Gastronómico' || params.moodLabel === 'Gastronómico') {
+          recurringSet.add('Gastronomía de proximidad');
+        }
+        if (params.environment === 'Cultural' || params.moodLabel === 'Curioso') {
+          recurringSet.add('Cultura y espacios locales');
+        }
+        if (averageEnergy <= 4.5 || params.moodLabel === 'Tranquilo' || params.moodLabel === 'Relajado') {
+          recurringSet.add('Ambiente tranquilo');
+        }
+
+        const recurringPreferences = Array.from(recurringSet).slice(0, 6);
+        const totalInteractions = prev.totalInteractions + 1;
+        const summary = buildTasteProfileSummary({
+          preferredCategories: updatedCats,
+          preferredMoods: updatedMoods,
+          averageEnergy,
+          recurringPreferences,
+          manualRestrictions: prev.manualRestrictions,
+          totalInteractions,
+        });
+
+        const nextProfile: UserTasteProfile = {
+          preferredCategories: updatedCats,
+          preferredMoods: updatedMoods,
+          preferredEnergyLevels: updatedEnergies,
+          averageEnergy,
+          recurringPreferences,
+          manualRestrictions: prev.manualRestrictions,
+          summary,
+          totalInteractions,
+          lastUpdated: new Date().toISOString(),
+        };
+
+        try {
+          localStorage.setItem(TASTE_PROFILE_KEY, JSON.stringify(nextProfile));
+        } catch (e) {
+          console.warn('Error saving userTasteProfile to localStorage:', e);
+        }
+
+        return nextProfile;
+      });
     },
     []
   );
+
+  // Gestión de historial "Ya estuve aquí" (visitedPlaces)
+  const isPlaceVisited = useCallback(
+    (placeId?: string, placeName?: string): boolean => {
+      const normalizedName = (placeName || '').toLowerCase().trim();
+      return visitedPlaces.some(
+        (vp) =>
+          (placeId && vp.id === placeId) ||
+          (normalizedName && vp.name.toLowerCase().trim() === normalizedName)
+      );
+    },
+    [visitedPlaces]
+  );
+
+  const toggleVisitedPlace = useCallback(
+    (place: { id: string; name: string; address?: string; cityName?: string }): boolean => {
+      let markedAsVisited = false;
+      const normalizedName = place.name.toLowerCase().trim();
+
+      setVisitedPlaces((prev) => {
+        const exists = prev.some(
+          (vp) =>
+            (place.id && vp.id === place.id) ||
+            (normalizedName && vp.name.toLowerCase().trim() === normalizedName)
+        );
+
+        let updated: VisitedPlace[];
+        if (exists) {
+          markedAsVisited = false;
+          updated = prev.filter(
+            (vp) =>
+              !(place.id && vp.id === place.id) &&
+              !(normalizedName && vp.name.toLowerCase().trim() === normalizedName)
+          );
+        } else {
+          markedAsVisited = true;
+          const entry: VisitedPlace = {
+            id: place.id || `visited-${Date.now()}`,
+            name: place.name,
+            address: place.address,
+            cityName: place.cityName,
+            visitedAt: new Date().toISOString(),
+          };
+          updated = [entry, ...prev];
+        }
+
+        try {
+          localStorage.setItem(VISITED_PLACES_KEY, JSON.stringify(updated));
+        } catch (e) {
+          console.warn('Error saving visitedPlaces to localStorage:', e);
+        }
+        return updated;
+      });
+
+      return markedAsVisited;
+    },
+    []
+  );
+
+  const removeVisitedPlace = useCallback((placeId: string, placeName?: string) => {
+    const normalizedName = (placeName || '').toLowerCase().trim();
+    setVisitedPlaces((prev) => {
+      const updated = prev.filter(
+        (vp) =>
+          vp.id !== placeId &&
+          !(normalizedName && vp.name.toLowerCase().trim() === normalizedName)
+      );
+      try {
+        localStorage.setItem(VISITED_PLACES_KEY, JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Error removing visitedPlace from localStorage:', e);
+      }
+      return updated;
+    });
+  }, []);
+
+  const clearVisitedPlaces = useCallback(() => {
+    setVisitedPlaces([]);
+    try {
+      localStorage.removeItem(VISITED_PLACES_KEY);
+    } catch (e) {
+      console.warn('Error clearing visitedPlaces in localStorage:', e);
+    }
+  }, []);
+
+  const toggleManualRestriction = useCallback((restriction: string) => {
+    setUserTasteProfile((prev) => {
+      const exists = prev.manualRestrictions.includes(restriction);
+      const manualRestrictions = exists
+        ? prev.manualRestrictions.filter((r) => r !== restriction)
+        : [...prev.manualRestrictions, restriction];
+
+      const summary = buildTasteProfileSummary({
+        preferredCategories: prev.preferredCategories,
+        preferredMoods: prev.preferredMoods,
+        averageEnergy: prev.averageEnergy,
+        recurringPreferences: prev.recurringPreferences,
+        manualRestrictions,
+        totalInteractions: prev.totalInteractions,
+      });
+
+      const nextProfile: UserTasteProfile = {
+        ...prev,
+        manualRestrictions,
+        summary,
+        lastUpdated: new Date().toISOString(),
+      };
+
+      try {
+        localStorage.setItem(TASTE_PROFILE_KEY, JSON.stringify(nextProfile));
+      } catch (e) {
+        console.warn('Error saving manual restrictions to userTasteProfile:', e);
+      }
+
+      return nextProfile;
+    });
+  }, []);
+
+  const resetTasteProfile = useCallback(() => {
+    const fresh: UserTasteProfile = {
+      ...defaultTasteProfile,
+      lastUpdated: new Date().toISOString(),
+    };
+    setUserTasteProfile(fresh);
+    try {
+      localStorage.removeItem(TASTE_PROFILE_KEY);
+    } catch (e) {
+      console.warn('Error clearing userTasteProfile:', e);
+    }
+  }, []);
 
   const savePlan = useCallback(
     (plan: ProposalPlan) => {
@@ -424,6 +792,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         latitude: targetLocation.lat,
         longitude: targetLocation.lng,
         experienceMode: criteria.experienceMode || state.formState.experienceMode || 'chained',
+        onlyOpenNow: criteria.onlyOpenNow ?? state.formState.onlyOpenNow ?? false,
         userAffinities: {
           topEnvironments,
           topMoods,
@@ -432,6 +801,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           totalSearches: userAffinities.totalSearches,
           totalSavedExperiences: userAffinities.totalSavedExperiences,
           summaryNarrative: summaryParts.join(' • '),
+        },
+        visitedPlaces: visitedPlaces.map((vp) => ({ id: vp.id, name: vp.name })),
+        userTasteProfile: {
+          summary: userTasteProfile.summary,
+          manualRestrictions: userTasteProfile.manualRestrictions,
+          recurringPreferences: userTasteProfile.recurringPreferences,
+          averageEnergy: userTasteProfile.averageEnergy,
         },
       };
 
@@ -549,7 +925,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setState((prevState) => ({ ...prevState, isLoading: false, loadingMessage: '' }));
       }
     },
-    [state.userLocation, userAffinities, recordAffinities]
+    [state.userLocation, state.formState.experienceMode, state.formState.onlyOpenNow, userAffinities, visitedPlaces, userTasteProfile, recordAffinities]
   );
 
   // Botón directo "Sorpréndeme Ahora" (1-Tap)
@@ -608,6 +984,74 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [state.userLocation, userAffinities, handleGenerateItinerary]
   );
 
+  const handleStartGroupMode = useCallback(
+    async (locationOverride?: UserLocation) => {
+      const targetLocation = locationOverride || state.userLocation;
+      if (!targetLocation) {
+        setGroupError('Selecciona primero una ubicación para crear el mazo de 5 planes.');
+        return;
+      }
+
+      setIncomingGroupSession(null);
+      setGroupError(null);
+      setGroupLoading(true);
+      setGroupDeck([]);
+      setGroupDeckCity(targetLocation.cityName || 'tu ciudad');
+      setState((prev) => ({
+        ...prev,
+        page: 'group',
+        error: null,
+      }));
+
+      try {
+        const result = await generateGroupDeckProxy({
+          location: targetLocation,
+          cityName: targetLocation.cityName,
+          mood: state.formState.mood?.label,
+          environment: state.formState.entorno?.label,
+          budget: state.formState.budget ? `${state.formState.budget.symbol} ${state.formState.budget.label}` : undefined,
+          onlyOpenNow: state.formState.onlyOpenNow,
+          visitedPlaces: visitedPlaces.map((vp) => ({ id: vp.id, name: vp.name })),
+          userTasteProfile: {
+            summary: userTasteProfile.summary,
+            manualRestrictions: userTasteProfile.manualRestrictions,
+            recurringPreferences: userTasteProfile.recurringPreferences,
+            averageEnergy: userTasteProfile.averageEnergy,
+          },
+        });
+        setGroupDeck(result.deck);
+        setGroupDeckCity(result.cityName || targetLocation.cityName || 'tu ciudad');
+      } catch (err) {
+        console.error('Error starting Group Mode:', err);
+        setGroupError(
+          err instanceof Error
+            ? err.message
+            : 'No se pudo cargar el mazo de 5 propuestas para decidir juntos.'
+        );
+      } finally {
+        setGroupLoading(false);
+      }
+    },
+    [state.userLocation, state.formState, visitedPlaces, userTasteProfile]
+  );
+
+  const handleExitGroupMode = useCallback(() => {
+    setIncomingGroupSession(null);
+    if (typeof window !== 'undefined' && window.location.search) {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('gs') || url.searchParams.has('g')) {
+        url.searchParams.delete('gs');
+        url.searchParams.delete('g');
+        window.history.replaceState({}, '', url.pathname + url.search);
+      }
+    }
+    setState((prevState) => ({
+      ...prevState,
+      page: prevState.userLocation ? 'home' : 'welcome',
+      error: null,
+    }));
+  }, []);
+
   const handleBackToHome = () => {
     setState((prevState) => ({
       ...prevState,
@@ -623,18 +1067,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     ...state,
     savedPlans,
     userAffinities,
+    visitedPlaces,
+    userTasteProfile,
     isSavedPlansModalOpen,
     setIsSavedPlansModalOpen,
+    isPreferencesModalOpen,
+    setIsPreferencesModalOpen,
     savePlan,
     removeSavedPlan,
     clearSavedPlans,
     isPlanSaved,
     openSavedPlan,
+    toggleVisitedPlace,
+    removeVisitedPlace,
+    clearVisitedPlaces,
+    isPlaceVisited,
+    toggleManualRestriction,
+    resetTasteProfile,
     setUserLocation,
     setFormState,
     handleGenerateItinerary,
     handleSurpriseMe,
     handleBackToHome,
+    groupDeck,
+    groupDeckCity,
+    groupLoading,
+    groupError,
+    incomingGroupSession,
+    handleStartGroupMode,
+    handleExitGroupMode,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

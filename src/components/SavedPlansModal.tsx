@@ -23,7 +23,16 @@ const formatDate = (isoString: string): string => {
 };
 
 const SavedPlansModal: React.FC<SavedPlansModalProps> = ({ isOpen, onClose }) => {
-  const { savedPlans, removeSavedPlan, clearSavedPlans, openSavedPlan, userAffinities } = useAppContext();
+  const {
+    savedPlans,
+    removeSavedPlan,
+    clearSavedPlans,
+    openSavedPlan,
+    userAffinities,
+    userTasteProfile,
+    visitedPlaces,
+    setIsPreferencesModalOpen,
+  } = useAppContext();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [confirmClear, setConfirmClear] = useState<boolean>(false);
 
@@ -95,18 +104,32 @@ const SavedPlansModal: React.FC<SavedPlansModalProps> = ({ isOpen, onClose }) =>
           </button>
         </div>
 
-        {/* Mood Intelligence Banner */}
-        <div className="px-5 py-2.5 bg-gradient-to-r from-[#FF5E2B]/10 via-white/[0.03] to-transparent border-b border-white/[0.06] flex items-center justify-between text-[11px] text-gray-300">
-          <div className="flex items-center gap-2">
-            <span className="text-sm">🧠</span>
-            <span className="font-semibold text-white">Mood Intelligence:</span>
-            <span className="text-gray-400">
-              Ritmo habitual: <strong className="text-[#FF5E2B] font-bold">{userAffinities.averageIntensity.toFixed(1)}/10</strong>
+        {/* Mood Intelligence Banner & Access to Mis Preferencias */}
+        <div className="px-5 py-2.5 bg-gradient-to-r from-[#FF5E2B]/10 via-white/[0.03] to-transparent border-b border-white/[0.06] flex items-center justify-between gap-2 text-[11px] text-gray-300">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm flex-shrink-0">🧠</span>
+            <span className="font-semibold text-white flex-shrink-0">Mood Intelligence:</span>
+            <span className="text-gray-400 truncate">
+              Ritmo <strong className="text-[#FF5E2B] font-bold">{userAffinities.averageIntensity.toFixed(1)}/10</strong>
             </span>
           </div>
-          <span className="text-[10px] text-gray-400 hidden sm:inline">
-            {userAffinities.totalSearches} sesiones analizadas
-          </span>
+
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              setIsPreferencesModalOpen(true);
+            }}
+            className="text-[11px] font-bold text-[#FF5E2B] hover:text-white bg-[#FF5E2B]/15 hover:bg-[#FF5E2B] border border-[#FF5E2B]/30 px-2.5 py-1 rounded-lg transition flex items-center gap-1.5 flex-shrink-0 cursor-pointer"
+          >
+            <span>🎛️</span>
+            <span>Mis Preferencias</span>
+            {userTasteProfile.manualRestrictions.length + visitedPlaces.length > 0 && (
+              <span className="text-[9px] bg-black/30 px-1.5 rounded-full text-white">
+                {userTasteProfile.manualRestrictions.length + visitedPlaces.length}
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Search bar when plans exist */}

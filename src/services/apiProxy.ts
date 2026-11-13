@@ -6,6 +6,8 @@ import {
   Plan,
   GeneratedItinerary,
   RouteInfo,
+  SwipeCardItem,
+  GroupSwipeSession,
 } from '../types';
 
 const BASE_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
@@ -106,6 +108,8 @@ export async function generateItineraryProxy(payload: {
     longitude: lng,
     searchRadiusKm: radius,
     gpsLocation: isGpsActive ? { latitude: lat, longitude: lng, searchRadiusKm: radius } : undefined,
+    visitedPlaces: payload.criteria.visitedPlaces,
+    userTasteProfile: payload.criteria.userTasteProfile,
   };
 
   try {
@@ -212,3 +216,65 @@ export async function computeRouteProxy(
   }
   return (await res.json()) as RouteInfo;
 }
+
+export async function generateGroupDeckProxy(params: {
+  location: UserLocation;
+  cityName?: string;
+  mood?: string;
+  environment?: string;
+  budget?: string;
+  onlyOpenNow?: boolean;
+  visitedPlaces?: Array<{ id: string; name: string }>;
+  userTasteProfile?: {
+    summary: string;
+    manualRestrictions: string[];
+    recurringPreferences: string[];
+    averageEnergy: number;
+  };
+}): Promise<{ deck: SwipeCardItem[]; cityName: string }> {
+  const res = await fetch(`${BASE_API_URL}/api/group/deck`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...params,
+      latitude: params.location.lat,
+      longitude: params.location.lng,
+      cityName: params.cityName || params.location.cityName,
+    }),
+  });
+  if (!res.ok) {
+    const errData = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errData.error || 'No se pudo generar el mazo de 5 planes para votar');
+  }
+  return (await res.json()) as { deck: SwipeCardItem[]; cityName: string };
+}
+
+export async function createGroupSessionProxy(session: GroupSwipeSession): Promise<{ sessionId: string }> {
+  try {
+    const res = await fetch(`${BASE_API_URL}/api/group/session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(session),
+    });
+    if (res.ok) {
+      return (await res.json()) as { sessionId: string };
+    }
+  } catch (err) {
+    console.warn('No se pudo almacenar sesión en backend, usando enlace autocontenido:', err);
+  }
+  return { sessionId: session.sessionId };
+}
+
+export async function getGroupSessionProxy(sessionId: string): Promise<GroupSwipeSession | null> {
+  try {
+    const res = await fetch(`${BASE_API_URL}/api/group/session/${encodeURIComponent(sessionId)}`);
+    if (res.ok) {
+      const data = (await res.json()) as { session?: GroupSwipeSession };
+      return data.session || null;
+    }
+  } catch (err) {
+    console.warn('Fallback a payload URL al no recuperar sesión remota:', err);
+  }
+  return null;
+}
+

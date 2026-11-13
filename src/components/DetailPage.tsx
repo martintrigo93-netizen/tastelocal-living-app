@@ -56,6 +56,8 @@ const DetailPage: React.FC<DetailPageProps> = ({
     savePlan,
     removeSavedPlan,
     isPlanSaved,
+    isPlaceVisited,
+    toggleVisitedPlace,
     savedPlans,
     searchCriteria,
     isSavedPlansModalOpen,
@@ -65,6 +67,10 @@ const DetailPage: React.FC<DetailPageProps> = ({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
   const isSaved = isPlanSaved(plan.id);
+  const primaryStop = plan.schedule[0];
+  const isPrimaryVisited = primaryStop
+    ? isPlaceVisited(primaryStop.placeId, primaryStop.placeName)
+    : false;
   const isPetFilterActive = searchCriteria?.company === 'Con mascota';
 
   const toggleFavorite = () => {
@@ -76,6 +82,8 @@ const DetailPage: React.FC<DetailPageProps> = ({
   };
 
   const heroImage =
+    plan.photoUrl ||
+    plan.schedule[0]?.photoUrl ||
     plan.coverImage ||
     DEFAULT_COVER_IMAGES[plan.id] ||
     DEFAULT_COVER_IMAGES.essential;
@@ -171,6 +179,42 @@ const DetailPage: React.FC<DetailPageProps> = ({
                 {plan.badge}
               </span>
 
+              {/* Indicador Abierto Ahora / Consultar Horario */}
+              {plan.isOpenNow === true || plan.schedule[0]?.isOpenNow === true ? (
+                <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 backdrop-blur-md flex items-center gap-1.5 shadow-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Abierto ahora</span>
+                </span>
+              ) : plan.isOpenNow === false || plan.schedule[0]?.isOpenNow === false ? (
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-red-500/20 border border-red-500/40 text-red-300 backdrop-blur-md flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                  <span>Cerrado ahora</span>
+                </span>
+              ) : (
+                <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 backdrop-blur-md flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  <span>Consultar horario</span>
+                </span>
+              )}
+
+              {/* Valoración con Estrella y Reseñas */}
+              {(plan.rating || plan.schedule[0]?.rating) && (
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-black/60 border border-white/20 text-white backdrop-blur-md flex items-center gap-1">
+                  <span className="text-amber-400">★</span>
+                  <span>
+                    {(plan.rating || plan.schedule[0]?.rating || 4.8).toFixed(1)}
+                    {plan.userRatingsTotal ? ` (${plan.userRatingsTotal})` : plan.schedule[0]?.userRatingsTotal ? ` (${plan.schedule[0]?.userRatingsTotal})` : ''}
+                  </span>
+                </span>
+              )}
+
+              {/* Nivel de Precio */}
+              {(plan.priceLevel || plan.schedule[0]?.priceLevel) && (
+                <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-[#FF5E2B]/20 border border-[#FF5E2B]/40 text-[#FF5E2B] backdrop-blur-md">
+                  {plan.priceLevel || plan.schedule[0]?.priceLevel}
+                </span>
+              )}
+
               {/* Plan B Pill */}
               {(plan.isPlanB || weather?.isRainy) && (
                 <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/40 text-blue-300 backdrop-blur-md flex items-center gap-1">
@@ -198,8 +242,33 @@ const DetailPage: React.FC<DetailPageProps> = ({
               </span>
             </div>
 
-            {/* Favorite & Share buttons in Hero */}
-            <div className="flex items-center gap-2">
+            {/* Favorite, Visited & Share buttons in Hero */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {primaryStop && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    toggleVisitedPlace({
+                      id: primaryStop.placeId,
+                      name: primaryStop.placeName,
+                      address: primaryStop.placeAddress,
+                      cityName: searchCriteria?.cityName || searchCriteria?.location?.cityName,
+                    })
+                  }
+                  className={`py-1.5 px-2.5 rounded-xl border text-xs font-semibold transition flex items-center gap-1.5 backdrop-blur-md cursor-pointer ${
+                    isPrimaryVisited
+                      ? 'bg-emerald-500/25 border-emerald-500/50 text-emerald-200'
+                      : 'bg-black/50 border-white/20 text-gray-300 hover:text-white hover:border-white/40'
+                  }`}
+                  title={isPrimaryVisited ? 'Ya visitado (excluido)' : 'Marcar parada principal como visitada'}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="hidden sm:inline">{isPrimaryVisited ? 'Visitado' : 'Ya estuve aquí'}</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={toggleFavorite}
@@ -449,6 +518,7 @@ const DetailPage: React.FC<DetailPageProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 {plan.schedule.map((item, idx) => {
                   const stopAmbience = getAmbienceTag(item, plan.energyRequired);
+                  const stopVisited = isPlaceVisited(item.placeId, item.placeName);
                   const walkingNavUrl = item.location
                     ? `https://www.google.com/maps/dir/?api=1&destination=${item.location.lat},${item.location.lng}&travelmode=walking`
                     : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`;
@@ -505,7 +575,28 @@ const DetailPage: React.FC<DetailPageProps> = ({
                           <span>🧭 Iniciar Ruta</span>
                         </a>
 
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              toggleVisitedPlace({
+                                id: item.placeId,
+                                name: item.placeName,
+                                address: item.placeAddress,
+                                cityName: searchCriteria?.cityName || searchCriteria?.location?.cityName,
+                              })
+                            }
+                            className={`py-1 px-2 rounded-lg border text-[10px] font-semibold transition flex items-center gap-1 cursor-pointer ${
+                              stopVisited
+                                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                : 'bg-white/5 hover:bg-white/10 border-white/10 text-gray-400 hover:text-white'
+                            }`}
+                            title={stopVisited ? 'Visitado (excluido)' : 'Ya estuve aquí'}
+                          >
+                            <span>✓</span>
+                            <span>{stopVisited ? 'Visitado' : 'Ya estuve'}</span>
+                          </button>
+
                           {item.phoneNumber ? (
                             <a
                               href={`tel:${item.phoneNumber}`}

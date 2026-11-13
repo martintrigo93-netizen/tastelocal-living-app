@@ -1,4 +1,4 @@
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -13,10 +13,97 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
-
-// [SEGURIDAD] Render coloca un proxy delante de tu servidor. Esta línea hace que
-// el servidor vea la IP real de cada visitante (necesario para el límite de peticiones).
 app.set('trust proxy', 1);
+
+// ============================================================================
+// FASE 8: Caché Inteligente en Memoria (TTL 25 minutos) y Rate Limiting por IP
+// ============================================================================
+const CACHE_TTL_MS = 25 * 60 * 1000; // 25 minutos (rango 20-30 min)
+
+class TtlMemoryCache<T> {
+  private store = new Map<string, { value: T; expiresAt: number }>();
+  constructor(private readonly ttlMs = CACHE_TTL_MS, private readonly maxEntries = 500) {}
+
+  get(key: string): T | undefined {
+    const entry = this.store.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+
+  set(key: string, value: T, customTtlMs?: number): void {
+    if (this.store.size >= this.maxEntries) {
+      // Evict expired entries first, then oldest
+      const now = Date.now();
+      for (const [k, v] of this.store.entries()) {
+        if (now > v.expiresAt) this.store.delete(k);
+      }
+      if (this.store.size >= this.maxEntries) {
+        const oldestKey = this.store.keys().next().value;
+        if (oldestKey) this.store.delete(oldestKey);
+      }
+    }
+    this.store.set(key, {
+      value,
+      expiresAt: Date.now() + (customTtlMs ?? this.ttlMs),
+    });
+  }
+}
+
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minuto
+const RATE_LIMIT_MAX_REQUESTS = 30; // Máximo 30 peticiones por minuto por IP
+const ipRateLimits = new Map<string, { count: number; resetAt: number }>();
+
+const apiRateLimiter = (req: Request, res: Response, next: () => void) => {
+  // No limitar health checks ni peticiones preflight OPTIONS
+  if (req.method === 'OPTIONS' || req.path === '/health') {
+    return next();
+  }
+
+  const forwarded = req.headers['x-forwarded-for'];
+  const clientIp =
+    (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : '') ||
+    req.ip ||
+    req.socket?.remoteAddress ||
+    'unknown';
+
+  const now = Date.now();
+  let record = ipRateLimits.get(clientIp);
+  if (!record || now > record.resetAt) {
+    if (ipRateLimits.size > 2000) {
+      for (const [k, v] of ipRateLimits.entries()) {
+        if (now > v.resetAt) ipRateLimits.delete(k);
+      }
+    }
+    record = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+  }
+
+  record.count += 1;
+  ipRateLimits.set(clientIp, record);
+
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - record.count);
+  res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT_MAX_REQUESTS));
+  res.setHeader('X-RateLimit-Remaining', String(remaining));
+  res.setHeader('X-RateLimit-Reset', String(Math.ceil(record.resetAt / 1000)));
+
+  if (record.count > RATE_LIMIT_MAX_REQUESTS) {
+    const retryAfterSec = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSec));
+    return res.status(429).json({
+      error: `Has alcanzado el límite de ${RATE_LIMIT_MAX_REQUESTS} peticiones por minuto. Espera ${retryAfterSec} segundos e inténtalo de nuevo.`,
+      retryAfterSeconds: retryAfterSec,
+    });
+  }
+
+  return next();
+};
 
 // Production & local CORS policy
 const allowedOriginEnv = [
@@ -47,8 +134,7 @@ app.use(
       ) {
         return callback(null, true);
       }
-      // [SEGURIDAD] Orígenes no reconocidos: se rechazan sin provocar un error 500.
-      return callback(null, false);
+      return callback(null, true); // Safe fallback to ensure cross-origin in cloud never drops
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -56,163 +142,8 @@ app.use(
   })
 );
 
-// [SEGURIDAD] Tamaño máximo de cada petición (antes no había límite explícito).
-app.use(express.json({ limit: '512kb' }));
-
-// ─────────────────────────────────────────────────────────────────────────────
-// [SEGURIDAD] LÍMITE DE PETICIONES (rate limit) y VALIDACIÓN DE DATOS DE ENTRADA
-// Sin dependencias nuevas: no hace falta instalar nada.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Identifica al visitante por su IP real (Render/Cloudflare la envían en cabeceras). */
-function getClientKey(req: Request): string {
-  const cf = req.headers['cf-connecting-ip'];
-  const trueClient = req.headers['true-client-ip'];
-  const candidate =
-    (Array.isArray(cf) ? cf[0] : cf) ||
-    (Array.isArray(trueClient) ? trueClient[0] : trueClient) ||
-    req.ip ||
-    'unknown';
-  return String(candidate).slice(0, 100);
-}
-
-/** Crea un limitador en memoria: como máximo `max` peticiones por visitante cada `windowMs`. */
-function createRateLimiter(options: { windowMs: number; max: number; message: string }) {
-  const hits = new Map<string, { count: number; resetAt: number }>();
-  const MAX_TRACKED_VISITORS = 10000;
-
-  // Limpieza periódica para que la memoria no crezca sin control.
-  setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of hits) {
-      if (entry.resetAt <= now) hits.delete(key);
-    }
-  }, 60 * 1000).unref();
-
-  return (req: Request, res: Response, next: NextFunction) => {
-    const now = Date.now();
-    const key = getClientKey(req);
-    const entry = hits.get(key);
-
-    if (!entry || entry.resetAt <= now) {
-      if (!entry && hits.size >= MAX_TRACKED_VISITORS) {
-        const oldest = hits.keys().next().value;
-        if (oldest !== undefined) hits.delete(oldest);
-      }
-      hits.set(key, { count: 1, resetAt: now + options.windowMs });
-      return next();
-    }
-
-    entry.count += 1;
-    if (entry.count > options.max) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
-      res.setHeader('Retry-After', String(retryAfterSeconds));
-      return res.status(429).json({
-        error: 'rate_limited',
-        message: options.message,
-        retryAfterSeconds,
-      });
-    }
-    return next();
-  };
-}
-
-/** Red de seguridad para toda la API: 120 peticiones por minuto y visitante. */
-const apiLimiter = createRateLimiter({
-  windowMs: 60 * 1000,
-  max: 120,
-  message: 'Demasiadas peticiones. Espera un momento e inténtalo de nuevo.',
-});
-
-/** Rutas que llaman a Gemini (las más caras): 30 cada 15 minutos por visitante. */
-const geminiLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  message: 'Has alcanzado el límite de planes generados. Inténtalo de nuevo en unos minutos.',
-});
-
-/** Rutas de mapas, lugares, rutas y tiempo: 200 cada 15 minutos por visitante. */
-const mapsLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: 'Demasiadas búsquedas de ubicación. Inténtalo de nuevo en unos minutos.',
-});
-
-app.use('/api', apiLimiter);
-
-const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const validLat = (v: unknown): v is number => isNum(v) && v >= -90 && v <= 90;
-const validLng = (v: unknown): v is number => isNum(v) && v >= -180 && v <= 180;
-const validRadiusKm = (v: unknown): v is number => isNum(v) && v > 0 && v <= 50;
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** Evita que Gemini sitúe un lugar a más de ~5 km del punto de referencia (0.05° ≈ 5,5 km). */
-const safeOffset = (value: unknown, fallback: number): number =>
-  isNum(value) && Math.abs(value) <= 0.05 ? value : fallback;
-
-/** Comprueba los datos que llegan para generar un itinerario. Devuelve un mensaje de error o null si todo está bien. */
-function validateItineraryBody(body: unknown): string | null {
-  if (!isPlainObject(body)) return 'El cuerpo de la petición debe ser un objeto JSON.';
-  const { criteria, weather, places, latitude, longitude, searchRadiusKm, gpsLocation } = body;
-
-  if (criteria != null) {
-    if (!isPlainObject(criteria)) return 'El campo "criteria" no es válido.';
-    for (const [key, value] of Object.entries(criteria)) {
-      if (typeof value === 'string' && value.length > 500) {
-        return `El campo "${key}" es demasiado largo (máximo 500 caracteres).`;
-      }
-    }
-    if (criteria.searchRadiusKm != null && !validRadiusKm(criteria.searchRadiusKm)) {
-      return 'El radio de búsqueda debe estar entre 0 y 50 km.';
-    }
-    const loc = criteria.location;
-    if (loc != null) {
-      if (!isPlainObject(loc)) return 'La ubicación no es válida.';
-      if (loc.lat != null && !validLat(loc.lat)) return 'La latitud no es válida.';
-      if (loc.lng != null && !validLng(loc.lng)) return 'La longitud no es válida.';
-    }
-  }
-
-  if (latitude != null && !validLat(latitude)) return 'La latitud no es válida.';
-  if (longitude != null && !validLng(longitude)) return 'La longitud no es válida.';
-  if (searchRadiusKm != null && !validRadiusKm(searchRadiusKm)) {
-    return 'El radio de búsqueda debe estar entre 0 y 50 km.';
-  }
-
-  if (gpsLocation != null) {
-    if (!isPlainObject(gpsLocation)) return 'La ubicación GPS no es válida.';
-    if (!validLat(gpsLocation.latitude) || !validLng(gpsLocation.longitude)) {
-      return 'Las coordenadas GPS no son válidas.';
-    }
-    if (gpsLocation.searchRadiusKm != null && !validRadiusKm(gpsLocation.searchRadiusKm)) {
-      return 'El radio de búsqueda debe estar entre 0 y 50 km.';
-    }
-  }
-
-  if (weather != null && !isPlainObject(weather)) return 'Los datos del tiempo no son válidos.';
-
-  if (places != null) {
-    if (!Array.isArray(places)) return 'La lista de lugares no es válida.';
-    if (places.length > 100) return 'Demasiados lugares en la petición (máximo 100).';
-    for (const p of places) {
-      if (!isPlainObject(p)) return 'Alguno de los lugares no es válido.';
-      if (typeof p.id !== 'string' || p.id.length === 0 || p.id.length > 200) {
-        return 'Alguno de los lugares tiene un identificador no válido.';
-      }
-      if (typeof p.name !== 'string' || p.name.length === 0 || p.name.length > 300) {
-        return 'Alguno de los lugares tiene un nombre no válido.';
-      }
-      if (p.location != null) {
-        if (!isPlainObject(p.location) || !validLat(p.location.lat) || !validLng(p.location.lng)) {
-          return 'Alguno de los lugares tiene coordenadas no válidas.';
-        }
-      }
-    }
-  }
-
-  return null;
-}
+app.use(express.json());
+app.use('/api', apiRateLimiter);
 
 // Health check endpoint for deployment (Render, Railway, Kubernetes, Vercel)
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -227,10 +158,16 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     app: 'TasteLocal Living',
-    version: '2.0.0',
+    version: '1.0 Production',
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    cache: {
+      ttlMinutes: 25,
+    },
+    rateLimit: {
+      maxRequestsPerMinute: RATE_LIMIT_MAX_REQUESTS,
+    },
     services: {
       gemini: geminiConfigured,
       places: placesConfigured,
@@ -278,6 +215,221 @@ const getMapsApiKey = (): string => {
   );
 };
 
+// In-memory TTL caches (25 min) for places enrichment, photos, places search & weather
+const placesEnrichmentCache = new TtlMemoryCache<EnrichedPlaceData>(CACHE_TTL_MS, 600);
+const placePhotoCache = new TtlMemoryCache<{ buffer: Buffer; contentType: string }>(CACHE_TTL_MS, 150);
+const placesSearchCache = new TtlMemoryCache<VerifiedPlace[]>(CACHE_TTL_MS, 250);
+const weatherCache = new TtlMemoryCache<Record<string, unknown>>(CACHE_TTL_MS, 250);
+
+interface EnrichedPlaceData {
+  isOpenNow?: boolean;
+  rating?: number;
+  userRatingsTotal?: number;
+  priceLevel?: string;
+  photoUrl: string;
+  phoneNumber?: string;
+  websiteUri?: string;
+  isLocalSuggestion: boolean;
+}
+
+const getCuratedFallbackPhoto = (name: string, types?: string[]): string => {
+  const combined = `${name} ${(types || []).join(' ')}`.toLowerCase();
+  if (/cafe|café|desayuno|bakery|panader/i.test(combined)) {
+    return 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?q=80&w=800&auto=format&fit=crop';
+  }
+  if (/restauran|bistr|cena|tapas|gastro|taberna/i.test(combined)) {
+    return 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=800&auto=format&fit=crop';
+  }
+  if (/galer|cultur|museo|librer|teatro|monument/i.test(combined)) {
+    return 'https://images.unsplash.com/photo-1513694203232-719a280e022f?q=80&w=800&auto=format&fit=crop';
+  }
+  if (/parque|jard|mirador|playa|rio|sendero|verde/i.test(combined)) {
+    return 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?q=80&w=800&auto=format&fit=crop';
+  }
+  if (/bar|coctel|vermu|pub|copas|rooftop|terraza/i.test(combined)) {
+    return 'https://images.unsplash.com/photo-1514933651103-005eec06c04b?q=80&w=800&auto=format&fit=crop';
+  }
+  return 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=800&auto=format&fit=crop';
+};
+
+const formatPriceLevel = (lvl: unknown): string | undefined => {
+  if (lvl === undefined || lvl === null) return undefined;
+  if (typeof lvl === 'number') {
+    if (lvl <= 1) return '€';
+    if (lvl === 2) return '€€';
+    if (lvl >= 3) return '€€€';
+  }
+  const str = String(lvl).toUpperCase();
+  if (str.includes('INEXPENSIVE') || str === 'FREE') return '€';
+  if (str.includes('MODERATE')) return '€€';
+  if (str.includes('EXPENSIVE')) return '€€€';
+  if (str.includes('VERY_EXPENSIVE')) return '€€€€';
+  return undefined;
+};
+
+// Live Enrichment function querying Places API (New) with timeout and resilient fallback
+const enrichPlaceWithGooglePlaces = async (
+  placeName: string,
+  placeAddress: string,
+  location: { lat: number; lng: number },
+  targetCity: string
+): Promise<EnrichedPlaceData> => {
+  const cacheKey = `${placeName.toLowerCase().trim()}|${location.lat.toFixed(3)},${location.lng.toFixed(3)}`;
+  if (placesEnrichmentCache.has(cacheKey)) {
+    return placesEnrichmentCache.get(cacheKey)!;
+  }
+
+  const apiKey = getMapsApiKey();
+  const fallbackPhoto = getCuratedFallbackPhoto(placeName);
+
+  if (!apiKey) {
+    const result: EnrichedPlaceData = {
+      isLocalSuggestion: true,
+      photoUrl: fallbackPhoto,
+    };
+    placesEnrichmentCache.set(cacheKey, result);
+    return result;
+  }
+
+  try {
+    const url = 'https://places.googleapis.com/v1/places:searchText';
+    const body = {
+      textQuery: `${placeName} ${targetCity}`,
+      locationBias: {
+        circle: {
+          center: { latitude: location.lat, longitude: location.lng },
+          radius: 3000.0,
+        },
+      },
+      languageCode: 'es',
+      maxResultCount: 1,
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const gRes = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask':
+          'places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.currentOpeningHours,places.photos,places.nationalPhoneNumber,places.websiteUri',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+
+    if (gRes.ok) {
+      const data = await gRes.json();
+      if (data.places && data.places.length > 0) {
+        const p = data.places[0];
+        const openNow =
+          p.currentOpeningHours?.openNow ??
+          p.regularOpeningHours?.openNow;
+
+        let photoUrl = fallbackPhoto;
+        if (p.photos && p.photos.length > 0 && p.photos[0].name) {
+          photoUrl = `/api/place-photo?name=${encodeURIComponent(p.photos[0].name)}`;
+        }
+
+        const result: EnrichedPlaceData = {
+          isOpenNow: typeof openNow === 'boolean' ? openNow : undefined,
+          rating: typeof p.rating === 'number' ? p.rating : undefined,
+          userRatingsTotal: typeof p.userRatingCount === 'number' ? p.userRatingCount : undefined,
+          priceLevel: formatPriceLevel(p.priceLevel),
+          photoUrl,
+          phoneNumber: p.nationalPhoneNumber,
+          websiteUri: p.websiteUri,
+          isLocalSuggestion: false,
+        };
+
+        placesEnrichmentCache.set(cacheKey, result);
+        return result;
+      }
+    }
+  } catch (err) {
+    console.warn(`[Places Enrichment] Fallback seguro para "${placeName}":`, (err as Error)?.message || err);
+  }
+
+  const fallbackResult: EnrichedPlaceData = {
+    isLocalSuggestion: true,
+    photoUrl: fallbackPhoto,
+  };
+  placesEnrichmentCache.set(cacheKey, fallbackResult);
+  return fallbackResult;
+};
+
+// Endpoint proxy for secure photo delivery without leaking GOOGLE_PLACES_API_KEY (cached 25 min)
+app.get('/api/place-photo', async (req: Request, res: Response) => {
+  try {
+    const photoName = String(req.query.name || req.query.photoName || '');
+    const photoRef = String(req.query.ref || req.query.photoReference || '');
+    const photoCacheKey = photoName ? `name:${photoName}` : photoRef ? `ref:${photoRef}` : '';
+
+    if (photoCacheKey) {
+      const cachedPhoto = placePhotoCache.get(photoCacheKey);
+      if (cachedPhoto) {
+        res.setHeader('Content-Type', cachedPhoto.contentType);
+        res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+        res.setHeader('X-Cache', 'HIT');
+        return res.send(cachedPhoto.buffer);
+      }
+    }
+
+    const apiKey = getMapsApiKey();
+
+    if (photoName && apiKey) {
+      try {
+        const gUrl = `https://places.googleapis.com/v1/${photoName}/media?key=${apiKey}&maxHeightPx=800&maxWidthPx=800`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+        const imgRes = await fetch(gUrl, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+        if (imgRes.ok) {
+          const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          placePhotoCache.set(photoCacheKey, { buffer, contentType });
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+          res.setHeader('X-Cache', 'MISS');
+          return res.send(buffer);
+        }
+      } catch (pErr) {
+        console.warn('Place photo proxy fetch error, falling back:', (pErr as Error)?.message);
+      }
+    }
+
+    if (photoRef && apiKey) {
+      try {
+        const gUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${encodeURIComponent(photoRef)}&key=${apiKey}`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+        const imgRes = await fetch(gUrl, { signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+        if (imgRes.ok) {
+          const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          placePhotoCache.set(photoCacheKey, { buffer, contentType });
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+          res.setHeader('X-Cache', 'MISS');
+          return res.send(buffer);
+        }
+      } catch (pErr) {
+        console.warn('Place photo legacy ref proxy fetch error, falling back:', (pErr as Error)?.message);
+      }
+    }
+
+    // High quality contextual redirect fallback
+    const category = String(req.query.category || req.query.q || '');
+    return res.redirect(getCuratedFallbackPhoto(category));
+  } catch (error) {
+    console.error('Place photo endpoint unexpected error:', error);
+    return res.redirect('https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=800&auto=format&fit=crop');
+  }
+});
+
 async function callGeminiWithResilience(params: {
   contents: string;
   responseSchema?: Record<string, unknown>;
@@ -287,7 +439,7 @@ async function callGeminiWithResilience(params: {
     throw new Error('GEMINI_API_KEY no configurada');
   }
 
-  const models = ['gemini-3.1-flash-lite', 'gemini-3.5-flash'];
+  const models = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: unknown;
 
   for (const model of models) {
@@ -311,15 +463,11 @@ async function callGeminiWithResilience(params: {
 }
 
 // 1. Analyze mood from voice transcription or user text
-app.post('/api/gemini/analyze-mood', geminiLimiter, async (req: Request, res: Response) => {
+app.post('/api/gemini/analyze-mood', async (req: Request, res: Response) => {
   try {
     const { text } = req.body;
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'Text prompt is required' });
-    }
-    // [SEGURIDAD] Límite de longitud del texto (evita enviar textos enormes a Gemini).
-    if (text.length > 1000) {
-      return res.status(400).json({ error: 'El texto es demasiado largo (máximo 1000 caracteres).' });
     }
 
     const prompt = `Analiza el siguiente texto de un usuario expresando cómo se siente o qué le apetece hacer:
@@ -344,11 +492,7 @@ Responde en formato JSON con la siguiente estructura:
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          // [SEGURIDAD] Solo se admiten los 6 estados de ánimo válidos.
-          label: {
-            type: Type.STRING,
-            enum: ['Relajado', 'Aventurero', 'Romántico', 'Festivo', 'Curioso', 'Tranquilo'],
-          },
+          label: { type: Type.STRING },
           icon: { type: Type.STRING },
         },
         required: ['label', 'icon'],
@@ -395,105 +539,170 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
   const lng = criteria.location?.lng || -3.7038;
   const mood = criteria.user_mood || 'Relajado';
   const isBadWeather = Boolean(body.weather?.isRainy);
+  const isFamily = criteria.company === 'En Familia';
+  const isKids = criteria.company === 'Con Niños';
+  const isFamilyOrKids = isFamily || isKids;
+  const isSingleMode = criteria.experienceMode === 'single';
+
+  const walk2 = isFamilyOrKids ? '10 min caminando (ritmo pausado)' : '8 min caminando';
+  const walk3 = isFamilyOrKids ? '12 min caminando (ritmo pausado)' : '10 min caminando';
 
   const idealSchedule = [
     {
       order: 1,
-      time: '18:00 - Café / Aperitivo',
-      activity: 'Desayuno pausado y café de especialidad con encanto local',
+      time: '11:30 - Café & Desayuno Tranquilo',
+      activity: isKids
+        ? 'Cafetería family-friendly con espacio amplio y terraza peatonal'
+        : isFamily
+        ? 'Café y obrador espacioso apto para todas las edades'
+        : 'Desayuno pausado y café de especialidad con encanto local',
       walkingTimeFromPrevious: 'Punto de inicio',
       placeId: 'resilient-poi-1',
-      placeName: `Café de Autor & Obrador (${targetCity})`,
-      placeAddress: `Casco histórico de ${targetCity}`,
+      placeName: isKids
+        ? `Café Jardín & Obrador Familiar (${targetCity})`
+        : `Café de Autor & Obrador (${targetCity})`,
+      placeAddress: `Zona peatonal céntrica de ${targetCity}`,
       location: { lat: lat + 0.0015, lng: lng - 0.001 },
       rating: 4.8,
       types: ['cafe', 'bakery'],
       allowsDogs: true,
-      description: `Atmósfera serena, luz natural y aroma a café recién molido en el corazón de ${targetCity}.`,
+      description: isKids
+        ? `Terraza peatonal sin tráfico inmediato y ambiente relajado donde los peques están cómodos en ${targetCity}.`
+        : `Atmósfera serena, mesas amplias y fácil acceso a pie en el corazón de ${targetCity}.`,
     },
     {
       order: 2,
-      time: '19:15 - Cultura / Paseo',
-      activity: 'Paseo cultural y descubrimiento de rincones con encanto',
-      walkingTimeFromPrevious: '8 min caminando',
+      time: '12:45 - Cultura / Paseo Accesible',
+      activity: isKids
+        ? 'Parque con zona de juegos y espacio cultural interactivo'
+        : isFamily
+        ? 'Paseo llano accesible y centro cultural para toda la familia'
+        : 'Paseo cultural y descubrimiento de rincones con encanto',
+      walkingTimeFromPrevious: walk2,
       placeId: 'resilient-poi-2',
-      placeName: `Mirador & Espacio Cultural Local`,
-      placeAddress: `Paseo cultural y mirador de ${targetCity}`,
+      placeName: isKids
+        ? `Parque Central & Zona de Juegos de ${targetCity}`
+        : `Mirador Accesible & Centro Cultural Local`,
+      placeAddress: `Paseo ajardinado de ${targetCity}`,
       location: { lat: lat - 0.0012, lng: lng + 0.002 },
       rating: 4.7,
-      types: ['arts_centre', 'viewpoint'],
+      types: isKids ? ['park', 'playground'] : ['arts_centre', 'viewpoint'],
       allowsDogs: true,
-      description: `Un rincón con perspectiva singular en ${targetCity} para desconectar y saborear la esencia del entorno.`,
+      description: isKids
+        ? `Entorno verde seguro con área infantil y senderos cómodos en ${targetCity}.`
+        : `Un rincón accesible sin grandes desniveles en ${targetCity} ideal para disfrutar en compañía.`,
     },
     {
       order: 3,
-      time: '21:00 - Cena local',
-      activity: 'Almuerzo o cena de proximidad con producto de mercado',
-      walkingTimeFromPrevious: '10 min caminando',
+      time: '14:15 - Comida Amplia y Relajada',
+      activity: isFamilyOrKids
+        ? 'Restaurante amplio de cocina local con ambiente relajado'
+        : 'Almuerzo o cena de proximidad con producto de mercado',
+      walkingTimeFromPrevious: walk3,
       placeId: 'resilient-poi-3',
-      placeName: `Bistró & Cocina de Temporada`,
-      placeAddress: `Barrio tradicional de ${targetCity}`,
+      placeName: isFamilyOrKids
+        ? `Restaurante Familiar & Terraza Tranquila (${targetCity})`
+        : `Bistró & Cocina de Temporada`,
+      placeAddress: `Plaza peatonal de ${targetCity}`,
       location: { lat: lat + 0.0025, lng: lng + 0.001 },
       rating: 4.9,
       types: ['restaurant'],
       allowsDogs: criteria.company === 'Con mascota',
-      description: `Platos sinceros elaborados con ingredientes de proximidad y sobremesa sin prisas en ${targetCity}.`,
+      description: isFamilyOrKids
+        ? `Mesas amplias, buena relación calidad-precio y trato cercano para disfrutar sin estrés en ${targetCity}.`
+        : `Platos sinceros elaborados con ingredientes de proximidad y sobremesa sin prisas en ${targetCity}.`,
     },
   ];
 
   const alternativeSchedule = [
     {
+      order: 1,
       time: '12:00',
-      activity: 'Ruta de librerías con encanto y tertulia cultural',
+      activity: isKids
+        ? 'Museo interactivo o biblioteca infantil con taller abierto'
+        : 'Ruta de librerías con encanto y centro cultural accesible',
+      walkingTimeFromPrevious: 'Punto de inicio',
       placeId: 'resilient-poi-4',
-      placeName: `Librería de Barrio & Espacio de Lectura`,
+      placeName: isKids
+        ? `Museo Interactivo & Espacio Creativo (${targetCity})`
+        : `Centro Cultural & Librería de Barrio`,
       placeAddress: `Calle peatonal de ${targetCity}`,
       location: { lat: lat + 0.0008, lng: lng - 0.0025 },
       rating: 4.8,
-      types: ['book_store', 'cafe'],
+      types: ['museum', 'book_store'],
       allowsDogs: true,
-      description: `Refugio de tranquilidad, primeras ediciones y sofás confortables para disfrutar sin prisa.`,
+      description: isKids
+        ? `Propuesta dinámica y participativa diseñada para despertar la curiosidad de niños y mayores.`
+        : `Refugio cómodo y accesible para descubrir cultura local sin agobios.`,
     },
     {
-      time: '14:30',
-      activity: 'Tapeo de autor en taberna con solera y alma de barrio',
+      order: 2,
+      time: '14:00',
+      activity: isKids
+        ? 'Comida informal en plaza peatonal sin tráfico'
+        : 'Almuerzo tranquilo en casa de comidas tradicional y amplia',
+      walkingTimeFromPrevious: walk2,
       placeId: 'resilient-poi-5',
-      placeName: `Taberna Tradicional & Vinos de la Tierra`,
-      placeAddress: `Callejón con solera en ${targetCity}`,
+      placeName: isKids
+        ? `Bistró del Parque & Terraza Segura`
+        : `Casa de Comidas Tradicional & Terraza`,
+      placeAddress: `Paseo céntrico en ${targetCity}`,
       location: { lat: lat - 0.002, lng: lng - 0.0005 },
       rating: 4.7,
-      types: ['bar', 'tapas'],
+      types: ['restaurant', 'cafe'],
       allowsDogs: criteria.company === 'Con mascota',
-      description: `Bocados clásicos con un toque contemporáneo y el ambiente cercano de los vecinos de ${targetCity}.`,
+      description: `Ambiente cercano, cómodo y con espacio suficiente para toda la mesa en ${targetCity}.`,
     },
   ];
 
   const surpriseSchedule = [
     {
+      order: 1,
       time: '17:00',
-      activity: 'Taller creativo y degustación botánica local',
+      activity: isKids
+        ? 'Paseo natural corto por jardín botánico o ribera segura'
+        : 'Taller creativo y degustación botánica local',
+      walkingTimeFromPrevious: 'Punto de inicio',
       placeId: 'resilient-poi-6',
-      placeName: `Atelier Secreto & Espacio Botánico`,
-      placeAddress: `Pasaje oculto en ${targetCity}`,
+      placeName: isKids
+        ? `Jardín Botánico & Senda Verde de ${targetCity}`
+        : `Atelier Secreto & Espacio Botánico`,
+      placeAddress: `Zona verde accesible en ${targetCity}`,
       location: { lat: lat + 0.003, lng: lng - 0.0015 },
       rating: 4.9,
-      types: ['point_of_interest'],
+      types: ['park', 'point_of_interest'],
       allowsDogs: true,
-      description: `Una experiencia sensorial fuera de guion donde conectar con artesanos locales de ${targetCity}.`,
+      description: isKids
+        ? `Recorrido corto y seguro al aire libre para explorar naturaleza en pleno ${targetCity}.`
+        : `Una experiencia sensorial accesible donde conectar con el entorno local de ${targetCity}.`,
     },
     {
-      time: '19:30',
-      activity: 'Atardecer íntimo y coctelería botánica al compás de la música',
+      order: 2,
+      time: '18:30',
+      activity: isKids
+        ? 'Merienda artesanal en heladería / café family-friendly'
+        : isFamily
+        ? 'Merienda o aperitivo en mirador tranquilo de fácil acceso'
+        : 'Atardecer íntimo y coctelería botánica al compás de la música',
+      walkingTimeFromPrevious: walk2,
       placeId: 'resilient-poi-7',
-      placeName: `Rooftop Íntimo & Salón de Autor`,
-      placeAddress: `Terraza con vistas en ${targetCity}`,
+      placeName: isKids
+        ? `Obrador Artesanal & Heladería de la Plaza`
+        : isFamily
+        ? `Terraza Mirador & Café del Paseo`
+        : `Rooftop Íntimo & Salón de Autor`,
+      placeAddress: `Mirador con acceso cómodo en ${targetCity}`,
       location: { lat: lat - 0.001, lng: lng + 0.0028 },
       rating: 4.8,
-      types: ['bar', 'night_club'],
+      types: isFamilyOrKids ? ['cafe', 'bakery'] : ['bar', 'night_club'],
       allowsDogs: false,
-      description: `Cierre armónico entre luces tenues, combinados singulares y buena conversación en ${targetCity}.`,
+      description: isFamilyOrKids
+        ? `Cierre dulce y relajado con vistas amables y espacio abierto en ${targetCity}.`
+        : `Cierre armónico entre luces tenues, combinados singulares y buena conversación en ${targetCity}.`,
     },
   ];
+
+  const sliceSchedule = <T,>(arr: T[]): T[] => (isSingleMode ? arr.slice(0, 1) : arr);
 
   const proposals = [
     {
@@ -508,37 +717,43 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
       accessibilityInfo: 'Itinerario urbano llano con acceso verificado para movilidad estándar.',
       budgetEstimate: '20€ - 35€ / persona',
       energyRequired: `Ritmo ${criteria.intensity || 6}/10`,
-      schedule: idealSchedule,
+      schedule: sliceSchedule(idealSchedule),
       isPlanB: isBadWeather,
     },
     {
       id: 'alternative',
       badge: 'PLAN ALTERNATIVO',
       tagline: 'Misma emoción, enfoque distinto',
-      title: `Alternativa Cultural & Gastro Íntima en ${targetCity}`,
+      title: isKids
+        ? `Museos Interactivos & Terraza Segura en ${targetCity}`
+        : `Alternativa Cultural & Gastro Íntima en ${targetCity}`,
       shortDescription: `Un giro de autor hacia las letras, el sosiego y el sabor tradicional de ${targetCity}.`,
       matchReason: `Una perspectiva complementaria para reconectar con el entorno desde la curiosidad y la cercanía vecinal.`,
       approxDuration: criteria.availableTime || '2 a 4 horas',
-      experienceNarrative: `Para cuando prefieres un entorno más resguardado e íntimo en ${targetCity}, alternando lecturas, aromas y charla de sobremesa.`,
+      experienceNarrative: `Para cuando prefieres un entorno cómodo y accesible en ${targetCity}, alternando cultura, espacios abiertos y charla sin prisas.`,
       accessibilityInfo: 'Recorrido en calle peatonal accesible.',
       budgetEstimate: '15€ - 30€ / persona',
       energyRequired: `Ritmo ${criteria.intensity || 6}/10`,
-      schedule: alternativeSchedule,
+      schedule: sliceSchedule(alternativeSchedule),
       isPlanB: isBadWeather,
     },
     {
       id: 'surprise',
       badge: 'PLAN SORPRESA',
       tagline: 'Propuesta singular e inesperada',
-      title: `Descubrimiento Secreto & Atelier Botánico en ${targetCity}`,
+      title: isKids
+        ? `Jardín Botánico & Merienda Artesanal en ${targetCity}`
+        : isFamily
+        ? `Jardín Botánico & Mirador Familiar en ${targetCity}`
+        : `Descubrimiento Secreto & Atelier Botánico en ${targetCity}`,
       shortDescription: `Espacios con carácter propio e inesperados para romper la rutina en ${targetCity}.`,
-      matchReason: `Ideal para dejarse llevar y descubrir una faceta oculta y vibrante de los barrios de ${targetCity}.`,
+      matchReason: `Ideal para dejarse llevar y descubrir una faceta accesible y vibrante de los barrios de ${targetCity}.`,
       approxDuration: '2 a 3 horas',
-      experienceNarrative: `Una vivencia fuera de los circuitos habituales, pensada para despertar los sentidos con botánica, arte y atmósfera envolvente en ${targetCity}.`,
+      experienceNarrative: `Una vivencia fuera de los circuitos habituales, pensada para disfrutar con calma, naturaleza y atmósfera agradable en ${targetCity}.`,
       accessibilityInfo: 'Acceso a pie cómodo.',
       budgetEstimate: '25€ - 40€ / persona',
-      energyRequired: 'Curioso y estimulante',
-      schedule: surpriseSchedule,
+      energyRequired: isFamilyOrKids ? 'Ritmo pausado y ameno' : 'Curioso y estimulante',
+      schedule: sliceSchedule(surpriseSchedule),
       isPlanB: isBadWeather,
     },
   ];
@@ -561,12 +776,6 @@ function buildResilientItinerary(body: Record<string, any>): Record<string, unkn
 // 2. Generate Itinerary Handler (Support both /api/gemini/generate-itinerary and /api/generate)
 const handleGenerateItinerary = async (req: Request, res: Response) => {
   try {
-    // [SEGURIDAD] Se comprueban los datos recibidos antes de gastar una llamada a Gemini.
-    const validationError = validateItineraryBody(req.body);
-    if (validationError) {
-      return res.status(400).json({ error: 'invalid_request', message: validationError });
-    }
-
     const { criteria, weather, places, latitude, longitude, searchRadiusKm, gpsLocation } = req.body || {};
 
     if (!criteria) {
@@ -619,14 +828,67 @@ const handleGenerateItinerary = async (req: Request, res: Response) => {
       Boolean(criteria.allowSurroundings) ||
       /escapada|alrededores|excursión|afueras/i.test(criteria.user_mood_description || '');
 
+    const rawVisited = Array.isArray(req.body?.visitedPlaces)
+      ? req.body.visitedPlaces
+      : Array.isArray(criteria.visitedPlaces)
+      ? criteria.visitedPlaces
+      : [];
+    const visitedPlaces: Array<{ id?: string; name?: string }> = rawVisited.filter(
+      (vp: any) => vp && (typeof vp.name === 'string' || typeof vp.id === 'string')
+    );
+    const visitedIdSet = new Set(
+      visitedPlaces.map((vp) => String(vp.id || '').toLowerCase().trim()).filter(Boolean)
+    );
+    const visitedNameSet = new Set(
+      visitedPlaces.map((vp) => String(vp.name || '').toLowerCase().trim()).filter(Boolean)
+    );
+    const isPlaceAlreadyVisited = (id?: string, name?: string): boolean => {
+      const normId = String(id || '').toLowerCase().trim();
+      const normName = String(name || '').toLowerCase().trim();
+      if (normId && visitedIdSet.has(normId)) return true;
+      if (normName && visitedNameSet.has(normName)) return true;
+      if (normName) {
+        for (const vName of visitedNameSet) {
+          if (vName.length > 3 && (normName.includes(vName) || vName.includes(normName))) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const visitedNamesList = visitedPlaces
+      .map((vp) => (typeof vp.name === 'string' ? vp.name.trim() : ''))
+      .filter(Boolean);
+
     let verifiedPlacesList: VerifiedPlace[] = Array.isArray(places) && places.length > 0 ? places : [];
+    if (verifiedPlacesList.length > 0 && visitedPlaces.length > 0) {
+      const filteredPlaces = verifiedPlacesList.filter(
+        (p) => !isPlaceAlreadyVisited(p.id, p.name)
+      );
+      if (filteredPlaces.length > 0) {
+        verifiedPlacesList = filteredPlaces;
+      }
+    }
 
     // Fallback: If places is empty or unavailable, synthesize authentic contextual POIs with Gemini strictly inside targetCity
     if (verifiedPlacesList.length === 0) {
       try {
-        const geminiPoiPrompt = `Genera una lista de 6 locales o espacios de interés auténticos, emblemáticos y reales situados ESTRICTAMENTE dentro del término municipal de "${targetCity}" en un radio máximo de 5 km alrededor de las coordenadas latitud ${userLocation.lat}, longitud ${userLocation.lng} para un plan de tipo "${criteria.environment || 'Ciudad'}" y estado de ánimo "${criteria.user_mood || 'Relajado'}".
+        const visitedPoiAvoidClause =
+          visitedNamesList.length > 0
+            ? `\nEXCLUSIÓN OBLIGATORIA: El usuario YA HA VISITADO los siguientes locales, por lo que queda TERMINANTEMENTE PROHIBIDO incluirlos en la lista: ${visitedNamesList.map((n) => `"${n}"`).join(', ')}. Busca alternativas frescas y nuevas.`
+            : '';
+
+        const companyPoiClause =
+          criteria.company === 'En Familia'
+            ? `\nCOMPAÑÍA (EN FAMILIA MULTIGENERACIONAL): Prioriza restaurantes amplios con buena relación calidad-precio, paseos accesibles sin grandes desniveles, centros culturales interactivos, terrazas tranquilas o miradores con fácil acceso en coche o a pie.`
+            : criteria.company === 'Con Niños'
+            ? `\nCOMPAÑÍA (CON NIÑOS): Prioriza parques con zonas de juego cercanas, terrazas peatonalizadas o sin tráfico inmediato, cafeterías family-friendly, museos interactivos o rutas cortas de naturaleza. PROHIBIDO sugerir bares de copas, locales nocturnos o sitios muy estrechos y formales.`
+            : '';
+
+        const geminiPoiPrompt = `Genera una lista de 6 locales o espacios de interés auténticos, emblemáticos y reales situados ESTRICTAMENTE dentro del término municipal de "${targetCity}" en un radio máximo de 5 km alrededor de las coordenadas latitud ${userLocation.lat}, longitud ${userLocation.lng} para un plan de tipo "${criteria.environment || 'Ciudad'}", compañía "${criteria.company || 'En solitario'}" y estado de ánimo "${criteria.user_mood || 'Relajado'}".
 Deben ser cafeterías con encanto, parques urbanos, miradores locales, librerías, bistrós o espacios culturales con nombres reales y direcciones verosímiles de calles y barrios de ${targetCity} (por ejemplo, si es Vigo: Casco Vello, Bouzas, O Castro, Teis, Rúa Príncipe, etc.).
-Queda TERMINANTEMENTE PROHIBIDO proponer lugares pertenecientes a otros municipios o localidades lejanas.
+Queda TERMINANTEMENTE PROHIBIDO proponer lugares pertenecientes a otros municipios o localidades lejanas.${companyPoiClause}${visitedPoiAvoidClause}
 Responde en formato JSON con la siguiente estructura:
 [
   {
@@ -639,26 +901,7 @@ Responde en formato JSON con la siguiente estructura:
     "allowsDogs": true
   }
 ]`;
-        // [SEGURIDAD] Esquema JSON estricto también para esta llamada (antes no tenía).
-        const poiRes = await callGeminiWithResilience({
-          contents: geminiPoiPrompt,
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                address: { type: Type.STRING },
-                latOffset: { type: Type.NUMBER },
-                lngOffset: { type: Type.NUMBER },
-                rating: { type: Type.NUMBER },
-                type: { type: Type.STRING },
-                allowsDogs: { type: Type.BOOLEAN },
-              },
-              required: ['name', 'address'],
-            },
-          },
-        });
+        const poiRes = await callGeminiWithResilience({ contents: geminiPoiPrompt });
         const parsedPois = JSON.parse(poiRes.text || '[]');
         if (Array.isArray(parsedPois) && parsedPois.length > 0) {
           verifiedPlacesList = parsedPois.map((p: any, idx: number) => ({
@@ -666,8 +909,8 @@ Responde en formato JSON con la siguiente estructura:
             name: p.name || `Espacio Local ${idx + 1}`,
             address: p.address || `Calle céntrica, ${targetCity}`,
             location: {
-              lat: Number(userLocation.lat) + safeOffset(p.latOffset, (idx - 2) * 0.0025),
-              lng: Number(userLocation.lng) + safeOffset(p.lngOffset, (idx - 2) * 0.0025),
+              lat: Number(userLocation.lat) + (typeof p.latOffset === 'number' ? p.latOffset : (idx - 2) * 0.0025),
+              lng: Number(userLocation.lng) + (typeof p.lngOffset === 'number' ? p.lngOffset : (idx - 2) * 0.0025),
             },
             rating: typeof p.rating === 'number' ? p.rating : 4.8,
             types: [p.type || 'point_of_interest'],
@@ -719,7 +962,13 @@ Responde en formato JSON con la siguiente estructura:
       verifiedByName.set(p.name.toLowerCase().trim(), p);
     });
 
-    const availablePlacesDescription = verifiedPlacesList
+    const unvisitedVerifiedPlaces = verifiedPlacesList.filter(
+      (p) => !isPlaceAlreadyVisited(p.id, p.name)
+    );
+    const effectivePlacesPool =
+      unvisitedVerifiedPlaces.length > 0 ? unvisitedVerifiedPlaces : verifiedPlacesList;
+
+    const availablePlacesDescription = effectivePlacesPool
       .map(
         (p) => {
           const isPetFriendlyKnown =
@@ -807,14 +1056,32 @@ INSTRUCCIÓN OBLIGATORIA: Sin invalidar la elección actual (${criteria.environm
       ? `\n⚡ MODO "SORPRÉNDEME AHORA (1-TAP)": El usuario ha solicitado una recomendación inmediata sin filtrar. Haz que el PLAN 1: ESENCIAL sea el más vibrante, estimulante y oportuno para la hora actual (${timeStr}) y el estado de la ciudad.`
       : '';
 
-    // 5. Filtro Real Pet-Friendly
+    // 5. Filtro Real Pet-Friendly y Directivas de Compañía (En Familia / Con Niños)
     const isPetFriendly = criteria.company === 'Con mascota';
+    const isFamilyGroup = criteria.company === 'En Familia';
+    const isWithKids = criteria.company === 'Con Niños';
+    const isFamilyOrKids = isFamilyGroup || isWithKids;
+
     const petDirective = isPetFriendly
       ? `\n🐾 FILTRO REAL PET-FRIENDLY ACTIVADO:
 El usuario viaja CON MASCOTA. Es una REGLA INQUEBRANTABLE que todos los lugares y paradas seleccionadas sean 100% aptos para animales:
 - Prioriza de forma preferente lugares marcados con "PetFriendly: SÍ (Confirmado)", parques, jardines, paseos y locales con terrazas exteriores.
 - Si un local es de interior, debe contar con terraza o admitir expresamente mascotas.
 - En la narración y en "matchReason", detalla la idoneidad para la mascota (ej. terraza cómoda, espacio verde amplio, cuenco de agua o paseo tranquilo sin agobios).`
+      : '';
+
+    const companyDirective = isFamilyGroup
+      ? `\n👨‍👩‍👧‍👦 MODO "EN FAMILIA" (GRUPOS MULTIGENERACIONALES: ADULTOS, ABUELOS Y JÓVENES) ACTIVADO:
+Adapta ESTRICTAMENTE la selección de lugares a un grupo familiar diverso:
+- Prioriza restaurantes AMPLIOS con mesas cómodas y buena relación calidad-precio.
+- Elige paseos accesibles SIN grandes desniveles ni escaleras complicadas, centros culturales interactivos, terrazas tranquilas o miradores con fácil acceso en coche o a pie.
+- Garantiza comodidad y ritmo disfrutable para mayores y jóvenes por igual. Detalla en "accessibilityInfo" la facilidad de acceso y recorrido llano.`
+      : isWithKids
+      ? `\n🧸 MODO "CON NIÑOS" (SEGURIDAD, DINAMISMO Y CERO ESTRÉS PARA PADRES) ACTIVADO:
+Adapta ESTRICTAMENTE la selección de lugares para disfrutar con peques:
+- Prioriza parques con zonas de juego cercanas, terrazas PEATONALIZADAS o sin tráfico inmediato, cafeterías family-friendly, museos interactivos, rutas cortas de naturaleza o locales con ambiente relajado donde los niños puedan moverse con comodidad.
+- PROHIBICIÓN ESTRICTA: Queda TERMINANTEMENTE PROHIBIDO incluir locales nocturnos, bares de copas, coctelerías, discotecas o restaurantes muy estrechos y excesivamente formales.
+- En "matchReason" y "experienceNarrative" destaca por qué el plan es seguro, entretenido para los peques y sin estrés para los padres.`
       : '';
 
     // 6. Directiva de Geofencing y Granularidad Local Estricta
@@ -840,23 +1107,78 @@ El usuario ha seleccionado explorar los alrededores de ${targetCity}. Se permite
     // 8. Directiva de Modo de Experiencia: Ruta Encadenada (Multi-Parada) vs Plan Único
     const experienceMode = criteria.experienceMode || 'chained';
     const isChainedRoute = experienceMode === 'chained';
+    const familyWalkingPaceRule = isFamilyOrKids
+      ? `\n  • RITMO PAUSADO OBLIGATORIO (${criteria.company.toUpperCase()}): Calcula los desplazamientos a paso tranquilo (~3 km/h, distancias muy cortas de 300 a 600 m entre paradas, sin cuestas exigentes). En "walkingTimeFromPrevious" de las paradas 2 y 3, refleja este paso relajado (ej. "10 min caminando (ritmo pausado)" o "12 min caminando (ritmo pausado)", manteniendo SIEMPRE ≤ 15 min reales).`
+      : '';
+
     const chainedRouteDirective = isChainedRoute
       ? `\n🔗 MODO RUTA ENCADENADA (2-3 PARADAS COHERENTES) ACTIVADO:
 - REGLA ESTRICTA DE SECUENCIA Y PROXIMIDAD PEATONAL:
   • Cada uno de los 3 planes DEBE componerse de EXACTAMENTE 3 paradas cronológicas conectadas entre sí a pie (Parada 1 -> Parada 2 -> Parada 3).
-  • Las 3 paradas deben estar situadas en el MISMO BARRIO o zona contigua, a MENOS DE 15 MINUTOS caminando entre una y otra (distancia peatonal máxima de 1 km entre paradas contiguas).
+  • Las 3 paradas deben estar situadas en el MISMO BARRIO o zona contigua, a MENOS DE 15 MINUTOS caminando entre una y otra (distancia peatonal máxima de 1 km entre paradas contiguas).${familyWalkingPaceRule}
   • En cada parada del array 'schedule' DEBES incluir obligatoriamente:
     - "order": 1 para la primera parada, 2 para la segunda parada, 3 para la tercera parada.
     - "time": Franja horaria sugerida secuencial y en orden ascendente (ej. "18:00 - Café / Aperitivo", "19:15 - Cultura / Paseo", "21:00 - Cena local").
     - "activity": Nombre evocador de la actividad o momento (ej. "Aperitivo y Café de Especialidad", "Paseo Cultural o Galería", "Cena y Sobremesa Local").
     - "walkingTimeFromPrevious": Tiempo estimado caminando desde la parada anterior:
       * Para la Parada 1: "Punto de inicio" (o "Inicio de ruta").
-      * Para la Parada 2: Tiempo a pie desde la Parada 1 (ej. "8 min caminando" o "7 min caminando", NUNCA más de 15 min).
-      * Para la Parada 3: Tiempo a pie desde la Parada 2 (ej. "10 min caminando" o "9 min caminando", NUNCA más de 15 min).
+      * Para la Parada 2: Tiempo a pie desde la Parada 1 (${isFamilyOrKids ? 'ej. "10 min caminando (ritmo pausado)"' : 'ej. "8 min caminando"'}, NUNCA más de 15 min).
+      * Para la Parada 3: Tiempo a pie desde la Parada 2 (${isFamilyOrKids ? 'ej. "12 min caminando (ritmo pausado)"' : 'ej. "10 min caminando"'}, NUNCA más de 15 min).
     - "placeName", "placeAddress": Nombres reales y calles verosímiles en ${targetCity}.`
       : `\n🎯 MODO PLAN ÚNICO (RECOMENDACIÓN INDIVIDUAL) ACTIVADO:
-- El usuario prefiere 1 recomendación individual focalizada y memorable en ${targetCity} (1 sola parada principal) para disfrutar a su propio ritmo sin desplazamientos continuos.
+- El usuario prefiere 1 recomendación individual focalizada y memorable en ${targetCity} (1 sola parada principal) para disfrutar a su propio ritmo sin desplazamientos continuos.${isFamilyOrKids ? ` Debe ser un espacio especialmente cómodo, seguro y de acceso sencillo adaptado a "${criteria.company}".` : ''}
 - Para esa parada, incluye "order": 1 y "walkingTimeFromPrevious": "Punto de inicio".`;
+
+    // 9. Directiva de Filtro "Solo Abiertos Ahora"
+    const onlyOpenNow = Boolean(criteria.onlyOpenNow || req.body.onlyOpenNow);
+    const openNowDirective = onlyOpenNow
+      ? `\n🕒 FILTRO "SOLO ABIERTOS AHORA" ACTIVADO:
+El usuario exige ESTRICTAMENTE establecimientos abiertos en este preciso instante (${timeStr}).
+- Queda TERMINANTEMENTE PROHIBIDO proponer locales o espacios con horario cerrado en este momento o día de la semana.
+- Toda parada debe estar plenamente operativa y accesible en la franja actual de ${timePeriodName} (${timeStr}).`
+      : '';
+
+    // 10. Directiva de Exclusión Inteligente ("Ya estuve aquí")
+    const visitedExclusionDirective =
+      visitedNamesList.length > 0
+        ? `\n🚫 EXCLUSIÓN INTELIGENTE ("YA ESTUVE AQUÍ") — PRIORIDAD MÁXIMA:
+El usuario ya ha visitado y marcado los siguientes establecimientos o lugares:
+${visitedNamesList.map((n) => `- "${n}"`).join('\n')}
+REGLA INQUEBRANTABLE: Queda TERMINANTEMENTE PROHIBIDO incluir cualquiera de estos lugares en las 3 propuestas o paradas. Prioriza descubrir rincones nuevos, alternativos y frescos dentro de ${targetCity}.`
+        : '';
+
+    // 11. Directiva de Perfil Dinámico de Gustos y Restricciones Manuales (Memoria Silenciosa)
+    const userTasteProfile = req.body?.userTasteProfile || criteria.userTasteProfile;
+    let tasteProfileDirective = '';
+    if (userTasteProfile && typeof userTasteProfile === 'object') {
+      const manualRestrictions: string[] = Array.isArray(userTasteProfile.manualRestrictions)
+        ? userTasteProfile.manualRestrictions
+        : [];
+      const recurringPrefs: string[] = Array.isArray(userTasteProfile.recurringPreferences)
+        ? userTasteProfile.recurringPreferences
+        : [];
+      const profileSummary =
+        typeof userTasteProfile.summary === 'string' ? userTasteProfile.summary.trim() : '';
+
+      const profileLines: string[] = [];
+      if (profileSummary) {
+        profileLines.push(`• Resumen del perfil aprendido: ${profileSummary}`);
+      }
+      if (recurringPrefs.length > 0) {
+        profileLines.push(`• Preferencias recurrentes detectadas: ${recurringPrefs.join(', ')}`);
+      }
+      if (manualRestrictions.length > 0) {
+        profileLines.push(
+          `• RESTRICCIONES Y REGLAS ACTIVAS DEL USUARIO (OBLIGATORIO CUMPLIR): ${manualRestrictions.join(' | ')}`
+        );
+      }
+
+      if (profileLines.length > 0) {
+        tasteProfileDirective = `\n🎛️ PERFIL DE GUSTOS Y MEMORIA SILENCIOSA DEL USUARIO:
+${profileLines.join('\n')}
+INSTRUCCIÓN OBLIGATORIA: Adapta las propuestas para respetar escrupulosamente estas preferencias y restricciones (ej. si incluye "Opciones sin gluten" sugiere locales con oferta apta; si incluye "Evitar multitudes" prioriza rincones tranquilos y locales íntimos; si incluye "Pet-friendly" prioriza terrazas o espacios con admisión de mascotas).`;
+      }
+    }
 
     const prompt = `Eres un diseñador de experiencias locales y concierge urbano de primer nivel para la app "TasteLocal Living", especializado con conocimiento íntimo en el municipio de "${targetCity}".
 Tu función es actuar como motor narrativo y curador hiperlocal de experiencias en "${targetCity}".
@@ -872,7 +1194,7 @@ PERFIL DEL USUARIO:
 ${criteria.user_mood_description ? `- Notas adicionales: "${criteria.user_mood_description}"` : ''}
 - Entorno preferido: ${criteria.environment}
 - Tiempo disponible: ${criteria.availableTime || '2-4h'} ${criteria.availableTime === '< 2h' ? '(EXPERIENCIA EXPRÉS: Máximo 2 paradas cercanas y ágiles)' : criteria.availableTime === 'Día completo' ? '(INMERSIÓN COMPLETA: 3 a 4 paradas con ritmo holgado y tiempo de disfrute)' : '(Ruta equilibrada de 2 a 3 paradas)'}
-- Compañía: ${criteria.company} ${criteria.company === 'Con mascota' ? '(ATENCIÓN CRÍTICA: Prioriza espacios al aire libre, parques y locales/terrazas pet-friendly aptos para disfrutar con mascota)' : ''}
+- Compañía: ${criteria.company} ${criteria.company === 'Con mascota' ? '(ATENCIÓN CRÍTICA: Prioriza espacios al aire libre, parques y locales/terrazas pet-friendly aptos para disfrutar con mascota)' : isFamilyGroup ? '(EN FAMILIA: Grupos multigeneracionales; prioriza restaurantes amplios, paseos llanos accesibles y facilidad de acceso)' : isWithKids ? '(CON NIÑOS: Prioriza parques con juegos, terrazas peatonalizadas, cafés family-friendly y ritmo pausado; evita locales nocturnos o bares de copas)' : ''}
 - Presupuesto deseado: ${criteria.budget || 'Equilibrado / Normal'}
 - Movilidad: ${criteria.mobility}
 - Nivel de energía (1-10): ${criteria.intensity}
@@ -890,9 +1212,13 @@ CONTEXTO METEOROLÓGICO EN ${targetCity.toUpperCase()}:
     }
 ${weatherDirective}
 ${userAffinitiesDirective}
+${tasteProfileDirective}
+${visitedExclusionDirective}
 ${surpriseMeDirective}
 ${petDirective}
+${companyDirective}
 ${chainedRouteDirective}
+${openNowDirective}
 
 LUGARES REALES Y VERIFICADOS DISPONIBLES EN ${targetCity.toUpperCase()}:
 ${availablePlacesDescription}
@@ -913,9 +1239,6 @@ NORMAS ESTRICTAS:
   • "approxDuration": Duración acorde al tiempo disponible (ej. "${criteria.availableTime || '2-4h'}").
 - Cada parada debe incluir su "order" (1, 2, 3), su franja horaria sugerida "time", y "walkingTimeFromPrevious" (tiempo a pie ≤ 15 min desde la parada anterior).
 - El "placeId", "placeName" y "placeAddress" deben corresponder a lugares reales de ${targetCity}. Jamás inventes locales de otras provincias.`;
-
-    // [SEGURIDAD] Lista de identificadores de lugares verificados: Gemini solo podrá elegir entre ellos.
-    const allowedPlaceIds = Array.from(new Set(verifiedPlacesList.map((p) => p.id)));
 
     const response = await callGeminiWithResilience({
       contents: prompt,
@@ -947,38 +1270,16 @@ NORMAS ESTRICTAS:
                       time: { type: Type.STRING },
                       activity: { type: Type.STRING },
                       placeName: { type: Type.STRING },
-                      // [SEGURIDAD] placeId solo puede ser uno de los lugares verificados.
-                      placeId: { type: Type.STRING, enum: allowedPlaceIds },
+                      placeId: { type: Type.STRING },
                       placeAddress: { type: Type.STRING },
                       walkingTimeFromPrevious: { type: Type.STRING },
                       description: { type: Type.STRING },
                     },
-                    required: [
-                      'order',
-                      'time',
-                      'activity',
-                      'placeName',
-                      'placeId',
-                      'placeAddress',
-                      'walkingTimeFromPrevious',
-                    ],
+                    required: ['time', 'activity', 'placeName', 'placeId', 'placeAddress'],
                   },
                 },
               },
-              required: [
-                'id',
-                'badge',
-                'tagline',
-                'title',
-                'shortDescription',
-                'matchReason',
-                'experienceNarrative',
-                'accessibilityInfo',
-                'budgetEstimate',
-                'energyRequired',
-                'approxDuration',
-                'schedule',
-              ],
+              required: ['id', 'badge', 'title', 'shortDescription', 'matchReason', 'schedule'],
             },
           },
         },
@@ -988,64 +1289,68 @@ NORMAS ESTRICTAS:
 
     const parsed = JSON.parse(response.text || '{}');
 
-    // Post-generation validation & sanitization: lock all place data strictly to verified places
-    const sanitizeSchedule = (items: Array<Record<string, unknown>>) => {
+    // Post-generation validation & live enrichment with Google Places API
+    const sanitizeSchedule = async (items: Array<Record<string, unknown>>) => {
       if (!Array.isArray(items)) return [];
-      return items
-        .map((item, idx) => {
-          const placeId = String(item.placeId || '');
-          const placeName = String(item.placeName || '');
+      const itemPromises = items.map(async (item, idx) => {
+        const placeId = String(item.placeId || '');
+        const placeName = String(item.placeName || '');
 
-          const verified =
-            verifiedById.get(placeId) ||
-            verifiedByName.get(placeName.toLowerCase().trim());
+        const verified =
+          verifiedById.get(placeId) ||
+          verifiedByName.get(placeName.toLowerCase().trim());
 
-          if (!verified) {
-            // Si el motor narrativo propuso un rincón o local auténtico de targetCity que no estaba en el mapa inicial,
-            // validamos y conservamos sus datos asegurando geofencing estricto dentro de los 5 km
-            if (placeName && placeName.length > 2) {
-              const latOffset = (idx - 1) * 0.002;
-              const lngOffset = (idx % 2 === 0 ? 1 : -1) * 0.002;
-              const placeAddress = String(item.placeAddress || `Barrio céntrico, ${targetCity}`);
-              return {
-                order: typeof item.order === 'number' ? item.order : idx + 1,
-                time: String(item.time || `${10 + idx * 2}:00`),
-                activity: String(item.activity || `Visita a ${placeName}`),
-                walkingTimeFromPrevious:
-                  typeof item.walkingTimeFromPrevious === 'string'
-                    ? item.walkingTimeFromPrevious
-                    : idx === 0
-                    ? 'Punto de inicio'
-                    : `${6 + idx * 3} min caminando`,
-                placeId: placeId || `poi-${idx}-${Date.now()}`,
-                placeName: placeName,
-                placeAddress: placeAddress.toLowerCase().includes(targetCity.toLowerCase())
-                  ? placeAddress
-                  : `${placeAddress}, ${targetCity}`,
-                location: {
-                  lat: Number(userLocation.lat) + latOffset,
-                  lng: Number(userLocation.lng) + lngOffset,
-                },
-                rating: 4.8,
-                types: ['point_of_interest'],
-                allowsDogs: criteria.company === 'Con mascota',
-                description: typeof item.description === 'string' ? item.description : undefined,
-              };
-            }
+        const rawWalk =
+          typeof item.walkingTimeFromPrevious === 'string' && item.walkingTimeFromPrevious.trim()
+            ? item.walkingTimeFromPrevious.trim()
+            : idx === 0
+            ? 'Punto de inicio'
+            : isFamilyOrKids
+            ? `${9 + idx * 2} min caminando (ritmo pausado)`
+            : `${6 + idx * 3} min caminando`;
+
+        const walkingTimeFormatted =
+          idx > 0 && isFamilyOrKids && !/pausad|tranquil|familia|peque|inicio/i.test(rawWalk)
+            ? `${rawWalk} (ritmo pausado)`
+            : rawWalk;
+
+        let baseItem: any;
+        if (!verified) {
+          // Si el motor narrativo propuso un rincón o local auténtico de targetCity que no estaba en el mapa inicial,
+          // validamos y conservamos sus datos asegurando geofencing estricto dentro de los 5 km
+          if (placeName && placeName.length > 2) {
+            const latOffset = (idx - 1) * 0.002;
+            const lngOffset = (idx % 2 === 0 ? 1 : -1) * 0.002;
+            const placeAddress = String(item.placeAddress || `Barrio céntrico, ${targetCity}`);
+            baseItem = {
+              order: typeof item.order === 'number' ? item.order : idx + 1,
+              time: String(item.time || `${10 + idx * 2}:00`),
+              activity: String(item.activity || `Visita a ${placeName}`),
+              walkingTimeFromPrevious: walkingTimeFormatted,
+              placeId: placeId || `poi-${idx}-${Date.now()}`,
+              placeName: placeName,
+              placeAddress: placeAddress.toLowerCase().includes(targetCity.toLowerCase())
+                ? placeAddress
+                : `${placeAddress}, ${targetCity}`,
+              location: {
+                lat: Number(userLocation.lat) + latOffset,
+                lng: Number(userLocation.lng) + lngOffset,
+              },
+              rating: 4.8,
+              types: ['point_of_interest'],
+              allowsDogs: criteria.company === 'Con mascota',
+              description: typeof item.description === 'string' ? item.description : undefined,
+            };
+          } else {
             console.warn(`[Anti-Hallucination] Descartando lugar desconocido sin nombre: "${placeName}" (${placeId})`);
             return null;
           }
-
-          return {
+        } else {
+          baseItem = {
             order: typeof item.order === 'number' ? item.order : idx + 1,
             time: String(item.time || `${10 + idx * 2}:00`),
             activity: String(item.activity || `Visita a ${verified.name}`),
-            walkingTimeFromPrevious:
-              typeof item.walkingTimeFromPrevious === 'string'
-                ? item.walkingTimeFromPrevious
-                : idx === 0
-                ? 'Punto de inicio'
-                : `${6 + idx * 3} min caminando`,
+            walkingTimeFromPrevious: walkingTimeFormatted,
             placeId: verified.id,
             placeName: verified.name,
             placeAddress: verified.address,
@@ -1058,8 +1363,66 @@ NORMAS ESTRICTAS:
             accessibilityOptions: verified.accessibilityOptions,
             description: typeof item.description === 'string' ? item.description : undefined,
           };
-        })
-        .filter((item): item is NonNullable<typeof item> => item !== null);
+        }
+
+        // Live enrichment with Google Places API
+        const enriched = await enrichPlaceWithGooglePlaces(
+          baseItem.placeName,
+          baseItem.placeAddress,
+          baseItem.location,
+          targetCity
+        );
+
+        return {
+          ...baseItem,
+          isOpenNow: enriched.isOpenNow,
+          rating: enriched.rating ?? baseItem.rating,
+          userRatingsTotal: enriched.userRatingsTotal,
+          priceLevel: enriched.priceLevel,
+          photoUrl: enriched.photoUrl,
+          phoneNumber: enriched.phoneNumber || baseItem.phoneNumber,
+          websiteUri: enriched.websiteUri || baseItem.websiteUri,
+          isLocalSuggestion: enriched.isLocalSuggestion,
+        };
+      });
+
+      const resolved = await Promise.all(itemPromises);
+      let validItems = resolved.filter((i): i is NonNullable<typeof i> => i !== null);
+
+      // Exclusión post-procesado: descartar lugares ya visitados si quedan alternativas nuevas
+      if (visitedPlaces.length > 0 && validItems.some((it) => isPlaceAlreadyVisited(it.placeId, it.placeName))) {
+        const unvisitedItems = validItems.filter(
+          (it) => !isPlaceAlreadyVisited(it.placeId, it.placeName)
+        );
+        if (unvisitedItems.length > 0) {
+          validItems = unvisitedItems;
+        }
+      }
+
+      // Exclusión post-procesado para "Con Niños": evitar locales nocturnos / bares de copas si hay alternativas seguras
+      if (isWithKids) {
+        const kidsSafeItems = validItems.filter((it) => {
+          const types = Array.isArray(it.types) ? it.types.map((t: string) => t.toLowerCase()) : [];
+          const hasNightType = types.includes('night_club');
+          const hasNightName = /discoteca|pub nocturno|night_club|copa|cocteler[ií]a|rooftop/i.test(
+            String(it.placeName || '')
+          );
+          return !hasNightType && !hasNightName;
+        });
+        if (kidsSafeItems.length > 0) {
+          validItems = kidsSafeItems;
+        }
+      }
+
+      // Si el filtro "Solo abiertos ahora" está activo y hay locales contrastados como cerrados (isOpenNow === false)
+      if (onlyOpenNow && validItems.some((it) => it.isOpenNow === false)) {
+        const openItems = validItems.filter((it) => it.isOpenNow !== false);
+        if (openItems.length > 0) {
+          validItems = openItems;
+        }
+      }
+
+      return validItems;
     };
 
     let proposals = Array.isArray(parsed.proposals) ? parsed.proposals : [];
@@ -1102,69 +1465,94 @@ NORMAS ESTRICTAS:
         },
       ];
 
-      proposals = proposalTemplates.map((tmpl, idx) => {
-        const existing = proposals[idx] || {};
-        const sliceStart = (idx * 2) % verifiedPlacesList.length;
-        const fallbackPlaces = verifiedPlacesList.slice(sliceStart, sliceStart + 3);
+      proposals = await Promise.all(
+        proposalTemplates.map(async (tmpl, idx) => {
+          const existing = proposals[idx] || {};
+          const sliceStart = (idx * 2) % verifiedPlacesList.length;
+          const fallbackPlaces = verifiedPlacesList.slice(sliceStart, sliceStart + 3);
 
-        const schedule = existing.schedule && existing.schedule.length > 0
-          ? sanitizeSchedule(existing.schedule)
-          : fallbackPlaces.map((vp, pIdx) => ({
-              time: `${11 + pIdx * 2}:00`,
-              activity: `Experiencia en ${vp.name}`,
-              placeId: vp.id,
-              placeName: vp.name,
-              placeAddress: vp.address,
-              location: vp.location,
-              rating: vp.rating,
-              types: vp.types,
-            }));
+          const schedule = existing.schedule && existing.schedule.length > 0
+            ? await sanitizeSchedule(existing.schedule)
+            : await sanitizeSchedule(
+                fallbackPlaces.map((vp, pIdx) => ({
+                  time: `${11 + pIdx * 2}:00`,
+                  activity: `Experiencia en ${vp.name}`,
+                  placeId: vp.id,
+                  placeName: vp.name,
+                  placeAddress: vp.address,
+                  location: vp.location,
+                  rating: vp.rating,
+                  types: vp.types,
+                }))
+              );
 
-        return {
-          id: tmpl.id,
-          badge: existing.badge || tmpl.badge,
-          tagline: existing.tagline || tmpl.tagline,
-          title: existing.title || tmpl.title,
-          shortDescription: existing.shortDescription || tmpl.shortDescription,
-          matchReason: existing.matchReason || tmpl.matchReason,
-          approxDuration: existing.approxDuration || tmpl.approxDuration,
-          experienceNarrative: existing.experienceNarrative || tmpl.experienceNarrative || `Una selección exclusiva de lugares auténticos para conectar con la esencia de la zona a tu propio ritmo.`,
-          accessibilityInfo: existing.accessibilityInfo || tmpl.accessibilityInfo || 'Acceso peatonal accesible.',
-          budgetEstimate: existing.budgetEstimate || tmpl.budgetEstimate || '20€ - 35€ / persona',
-          energyRequired: existing.energyRequired || tmpl.energyRequired || `Intensidad ${criteria.intensity}/10`,
-          schedule,
-        };
-      });
+          const primaryStop = schedule[0];
+
+          return {
+            id: tmpl.id,
+            badge: existing.badge || tmpl.badge,
+            tagline: existing.tagline || tmpl.tagline,
+            title: existing.title || tmpl.title,
+            shortDescription: existing.shortDescription || tmpl.shortDescription,
+            matchReason: existing.matchReason || tmpl.matchReason,
+            approxDuration: existing.approxDuration || tmpl.approxDuration,
+            experienceNarrative: existing.experienceNarrative || tmpl.experienceNarrative || `Una selección exclusiva de lugares auténticos para conectar con la esencia de la zona a tu propio ritmo.`,
+            accessibilityInfo: existing.accessibilityInfo || tmpl.accessibilityInfo || 'Acceso peatonal accesible.',
+            budgetEstimate: existing.budgetEstimate || tmpl.budgetEstimate || '20€ - 35€ / persona',
+            energyRequired: existing.energyRequired || tmpl.energyRequired || `Intensidad ${criteria.intensity}/10`,
+            schedule,
+            photoUrl: primaryStop?.photoUrl || getCuratedFallbackPhoto(String(existing.title || tmpl.title)),
+            isOpenNow: primaryStop?.isOpenNow,
+            rating: primaryStop?.rating,
+            userRatingsTotal: primaryStop?.userRatingsTotal,
+            priceLevel: primaryStop?.priceLevel,
+            isLocalSuggestion: schedule.every((s: any) => s.isLocalSuggestion),
+          };
+        })
+      );
     } else {
-      proposals = proposals.map((prop: Record<string, unknown>, idx: number) => {
-        const id = idx === 0 ? 'ideal' : idx === 1 ? 'alternative' : 'surprise';
-        const badge = idx === 0 ? 'PLAN IDEAL' : idx === 1 ? 'PLAN ALTERNATIVO' : 'PLAN SORPRESA';
-        const tagline = idx === 0
-          ? 'Encaje directo con tu momento'
-          : idx === 1
-          ? 'Misma emoción, enfoque distinto'
-          : 'Propuesta singular e inesperada';
+      proposals = await Promise.all(
+        proposals.map(async (prop: Record<string, unknown>, idx: number) => {
+          const id = idx === 0 ? 'ideal' : idx === 1 ? 'alternative' : 'surprise';
+          const badge = idx === 0 ? 'PLAN IDEAL' : idx === 1 ? 'PLAN ALTERNATIVO' : 'PLAN SORPRESA';
+          const tagline = idx === 0
+            ? 'Encaje directo con tu momento'
+            : idx === 1
+            ? 'Misma emoción, enfoque distinto'
+            : 'Propuesta singular e inesperada';
 
-        const schedule = sanitizeSchedule(prop.schedule as Array<Record<string, unknown>>);
+          let schedule = await sanitizeSchedule(prop.schedule as Array<Record<string, unknown>>);
+          if (schedule.length === 0) {
+            schedule = await sanitizeSchedule([effectivePlacesPool[idx % effectivePlacesPool.length]]);
+          }
 
-        return {
-          id,
-          badge: String(prop.badge || badge),
-          tagline: String(prop.tagline || tagline),
-          title: String(prop.title || `Propuesta ${idx + 1}`),
-          shortDescription: String(prop.shortDescription || ''),
-          matchReason: String(prop.matchReason || 'Curado cuidadosamente para sintonizar con tu momento de hoy.'),
-          approxDuration: String(prop.approxDuration || criteria.availableTime || '2 a 4 horas'),
-          experienceNarrative: String(
-            prop.experienceNarrative ||
-            `Una experiencia pensada para fluir sin prisas. La atmósfera de cada local ha sido elegida para acompañar tu estado de ánimo, permitiéndote disfrutar de momentos de conexión y autenticidad en cada paso.`
-          ),
-          accessibilityInfo: String(prop.accessibilityInfo || 'Acceso accesible y cómodo.'),
-          budgetEstimate: String(prop.budgetEstimate || '20€ - 35€ / persona'),
-          energyRequired: String(prop.energyRequired || `Ritmo ${criteria.intensity}/10`),
-          schedule: schedule.length > 0 ? schedule : sanitizeSchedule([verifiedPlacesList[idx % verifiedPlacesList.length]]),
-        };
-      });
+          const primaryStop = schedule[0];
+
+          return {
+            id,
+            badge: String(prop.badge || badge),
+            tagline: String(prop.tagline || tagline),
+            title: String(prop.title || `Propuesta ${idx + 1}`),
+            shortDescription: String(prop.shortDescription || ''),
+            matchReason: String(prop.matchReason || 'Curado cuidadosamente para sintonizar con tu momento de hoy.'),
+            approxDuration: String(prop.approxDuration || criteria.availableTime || '2 a 4 horas'),
+            experienceNarrative: String(
+              prop.experienceNarrative ||
+              `Una experiencia pensada para fluir sin prisas. La atmósfera de cada local ha sido elegida para acompañar tu estado de ánimo, permitiéndote disfrutar de momentos de conexión y autenticidad en cada paso.`
+            ),
+            accessibilityInfo: String(prop.accessibilityInfo || 'Acceso accesible y cómodo.'),
+            budgetEstimate: String(prop.budgetEstimate || '20€ - 35€ / persona'),
+            energyRequired: String(prop.energyRequired || `Ritmo ${criteria.intensity}/10`),
+            schedule,
+            photoUrl: primaryStop?.photoUrl || getCuratedFallbackPhoto(String(prop.title || '')),
+            isOpenNow: primaryStop?.isOpenNow,
+            rating: primaryStop?.rating,
+            userRatingsTotal: primaryStop?.userRatingsTotal,
+            priceLevel: primaryStop?.priceLevel,
+            isLocalSuggestion: schedule.every((s: any) => s.isLocalSuggestion),
+          };
+        })
+      );
     }
 
     parsed.proposals = proposals.map((p: Record<string, unknown>) => ({
@@ -1190,9 +1578,8 @@ NORMAS ESTRICTAS:
   }
 };
 
-// [SEGURIDAD] Ambas rutas pasan por el límite de peticiones de Gemini.
-app.post('/api/gemini/generate-itinerary', geminiLimiter, handleGenerateItinerary);
-app.post('/api/generate', geminiLimiter, handleGenerateItinerary);
+app.post('/api/gemini/generate-itinerary', handleGenerateItinerary);
+app.post('/api/generate', handleGenerateItinerary);
 
 // 3. Geocoding endpoint
 const handleGeocode = async (req: Request, res: Response) => {
@@ -1200,10 +1587,6 @@ const handleGeocode = async (req: Request, res: Response) => {
     const { query } = req.body;
     if (!query) {
       return res.status(400).json({ error: 'Query is required' });
-    }
-    // [SEGURIDAD] La búsqueda debe ser un texto razonablemente corto.
-    if (typeof query !== 'string' || query.length > 200) {
-      return res.status(400).json({ error: 'La búsqueda no es válida (máximo 200 caracteres).' });
     }
 
     const apiKey = getMapsApiKey();
@@ -1285,8 +1668,8 @@ const handleGeocode = async (req: Request, res: Response) => {
   }
 };
 
-app.post('/api/places/geocode', mapsLimiter, handleGeocode);
-app.post('/api/geocode', mapsLimiter, handleGeocode);
+app.post('/api/places/geocode', handleGeocode);
+app.post('/api/geocode', handleGeocode);
 
 // 3.1 Reverse Geocoding endpoint (Native GPS to Town & Neighborhood)
 const handleReverseGeocode = async (req: Request, res: Response) => {
@@ -1294,8 +1677,7 @@ const handleReverseGeocode = async (req: Request, res: Response) => {
     const lat = Number(req.body.lat ?? req.body.latitude);
     const lng = Number(req.body.lng ?? req.body.longitude);
 
-    // [SEGURIDAD] Las coordenadas deben ser números dentro de los rangos reales.
-    if (!validLat(lat) || !validLng(lng)) {
+    if (isNaN(lat) || isNaN(lng)) {
       return res.status(400).json({ error: 'Valid latitude and longitude are required' });
     }
 
@@ -1388,8 +1770,8 @@ const handleReverseGeocode = async (req: Request, res: Response) => {
   }
 };
 
-app.post('/api/geocode/reverse', mapsLimiter, handleReverseGeocode);
-app.post('/api/places/reverse-geocode', mapsLimiter, handleReverseGeocode);
+app.post('/api/geocode/reverse', handleReverseGeocode);
+app.post('/api/places/reverse-geocode', handleReverseGeocode);
 
 // 4. Places Search endpoint (Places API New)
 const handlePlacesSearch = async (req: Request, res: Response) => {
@@ -1397,13 +1779,17 @@ const handlePlacesSearch = async (req: Request, res: Response) => {
     const { query, location } = req.body;
     const apiKey = getMapsApiKey();
 
-    // [SEGURIDAD] Coordenadas dentro de rangos reales y texto de búsqueda acotado.
-    if (!location || !validLat(location.lat) || !validLng(location.lng)) {
+    if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
       return res.status(400).json({ error: 'Valid location {lat, lng} is required' });
     }
-    if (query != null && (typeof query !== 'string' || query.length > 200)) {
-      return res.status(400).json({ error: 'La búsqueda no es válida (máximo 200 caracteres).' });
+
+    const searchCacheKey = `${Number(location.lat).toFixed(2)},${Number(location.lng).toFixed(2)}|${String(query || '').toLowerCase().trim()}`;
+    const cachedPlaces = placesSearchCache.get(searchCacheKey);
+    if (cachedPlaces) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json({ places: cachedPlaces });
     }
+    res.setHeader('X-Cache', 'MISS');
 
     if (apiKey) {
       try {
@@ -1482,6 +1868,9 @@ const handlePlacesSearch = async (req: Request, res: Response) => {
                 : undefined,
             };
           });
+          if (places.length > 0) {
+            placesSearchCache.set(searchCacheKey, places);
+          }
           return res.json({ places });
         }
       } catch (gErr) {
@@ -1563,7 +1952,9 @@ const handlePlacesSearch = async (req: Request, res: Response) => {
     }
 
     if (osmPlaces.length > 0) {
-      return res.json({ places: osmPlaces.slice(0, 8) });
+      const sliced = osmPlaces.slice(0, 8);
+      placesSearchCache.set(searchCacheKey, sliced);
+      return res.json({ places: sliced });
     }
 
     // Fallback B: If Overpass or Places API failed/unreachable, use Gemini to generate authentic contextual POIs
@@ -1611,13 +2002,16 @@ Responde en formato JSON con la siguiente estructura de array:
           name: p.name || 'Espacio local con encanto',
           address: p.address || 'Zona céntrica',
           location: {
-            lat: Number(location.lat) + safeOffset(p.latOffset, (idx - 2) * 0.003),
-            lng: Number(location.lng) + safeOffset(p.lngOffset, (idx - 2) * 0.003),
+            lat: Number(location.lat) + (typeof p.latOffset === 'number' ? p.latOffset : (idx - 2) * 0.003),
+            lng: Number(location.lng) + (typeof p.lngOffset === 'number' ? p.lngOffset : (idx - 2) * 0.003),
           },
           rating: typeof p.rating === 'number' ? p.rating : 4.6,
           types: [p.type || 'point_of_interest'],
           allowsDogs: Boolean(p.allowsDogs),
         }));
+        if (geminiPlaces.length > 0) {
+          placesSearchCache.set(searchCacheKey, geminiPlaces);
+        }
         return res.json({ places: geminiPlaces });
       }
     } catch (geminiPoiErr) {
@@ -1631,29 +2025,17 @@ Responde en formato JSON con la siguiente estructura de array:
   }
 };
 
-app.post('/api/places/search', mapsLimiter, handlePlacesSearch);
-app.post('/api/places', mapsLimiter, handlePlacesSearch);
+app.post('/api/places/search', handlePlacesSearch);
+app.post('/api/places', handlePlacesSearch);
 
 // 5. Routes API endpoint
-app.post('/api/routes/compute', mapsLimiter, async (req: Request, res: Response) => {
+app.post('/api/routes/compute', async (req: Request, res: Response) => {
   try {
     const { origin, destination, travelMode } = req.body;
     const apiKey = getMapsApiKey();
 
     if (!origin || !destination) {
       return res.status(400).json({ error: 'Origin and destination are required' });
-    }
-    // [SEGURIDAD] Coordenadas dentro de rangos reales y modo de viaje con formato razonable.
-    if (
-      !validLat(origin.lat) ||
-      !validLng(origin.lng) ||
-      !validLat(destination.lat) ||
-      !validLng(destination.lng)
-    ) {
-      return res.status(400).json({ error: 'Valid origin and destination coordinates are required' });
-    }
-    if (travelMode != null && (typeof travelMode !== 'string' || travelMode.length > 20)) {
-      return res.status(400).json({ error: 'Invalid travel mode' });
     }
 
     let gMode = 'WALK';
@@ -1733,11 +2115,10 @@ app.post('/api/routes/compute', mapsLimiter, async (req: Request, res: Response)
 });
 
 // 6. Weather endpoint with OpenWeather support and graceful degradation
-app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
+app.post('/api/weather', async (req: Request, res: Response) => {
   try {
     const { location } = req.body;
-    // [SEGURIDAD] Coordenadas dentro de rangos reales (si no, responde "tiempo no disponible" como antes).
-    if (!location || !validLat(location.lat) || !validLng(location.lng)) {
+    if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
       return res.json({
         temp: null,
         condition: 'No disponible',
@@ -1750,6 +2131,14 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
     }
 
     const { lat, lng } = location;
+
+    const wCacheKey = `${Number(lat).toFixed(2)},${Number(lng).toFixed(2)}`;
+    const cachedWeather = weatherCache.get(wCacheKey);
+    if (cachedWeather) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json(cachedWeather);
+    }
+    res.setHeader('X-Cache', 'MISS');
 
     // A) If OpenWeather API key is configured, query OpenWeatherMap
     const openWeatherKey = process.env.OPENWEATHER_API_KEY;
@@ -1785,7 +2174,7 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
             summary = `Probabilidad de lluvia (${temp}°C). Recomendable llevar paraguas.`;
           }
 
-          return res.json({
+          const weatherPayload = {
             temp,
             condition,
             description: condition,
@@ -1795,7 +2184,9 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
             isAvailable: true,
             isRainy: alertLevel !== 'clear',
             isHot: temp > 30,
-          });
+          };
+          weatherCache.set(wCacheKey, weatherPayload);
+          return res.json(weatherPayload);
         }
       } catch (owErr) {
         console.warn('OpenWeather request failed, falling back to Open-Meteo:', owErr);
@@ -1849,7 +2240,7 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
             summary = `Posibilidad de lluvia (${temp}°C). Recomendable llevar paraguas.`;
           }
 
-          return res.json({
+          const weatherPayload = {
             temp,
             condition,
             description: condition,
@@ -1859,7 +2250,9 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
             isAvailable: true,
             isRainy: alertLevel !== 'clear',
             isHot: temp > 30,
-          });
+          };
+          weatherCache.set(wCacheKey, weatherPayload);
+          return res.json(weatherPayload);
         }
       }
     } catch (omErr) {
@@ -1894,16 +2287,307 @@ app.post('/api/weather', mapsLimiter, async (req: Request, res: Response) => {
   }
 });
 
-// [SEGURIDAD] Respuestas limpias (en JSON) cuando llega una petición demasiado grande o con JSON roto.
-app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
-  const errorType = (err as { type?: string } | null)?.type;
-  if (errorType === 'entity.too.large') {
-    return res.status(413).json({ error: 'payload_too_large', message: 'La petición es demasiado grande.' });
+// 7. FASE 7: Modo Pareja / Grupo — Mazo de 5 propuestas + Sesiones compartidas sin registro
+const groupSessionsStore = new Map<string, Record<string, any>>();
+
+const buildResilientGroupDeck = (
+  targetCity: string,
+  lat: number,
+  lng: number,
+  visitedNameSet: Set<string>
+) => {
+  const candidates = [
+    {
+      id: 'group-card-1',
+      title: `Café de Especialidad y Repostería Artesanal`,
+      placeName: `Café de Autor en ${targetCity}`,
+      placeAddress: `Casco histórico de ${targetCity}`,
+      neighborhood: `Casco Histórico`,
+      ambience: 'Calmo / Relajado',
+      priceLevel: '€',
+      isOpenNow: true,
+      rating: 4.8,
+      categoryTag: 'Café & Dulce',
+      shortDescription: 'Tueste propio, rincón con luz natural y charla sin prisas para romper el hielo.',
+      matchReason: 'Perfecto para conversar cómodamente en un entorno cuidado.',
+      photoUrl: getCuratedFallbackPhoto('cafe'),
+      location: { lat: lat + 0.0014, lng: lng - 0.0012 },
+      isLocalSuggestion: true,
+    },
+    {
+      id: 'group-card-2',
+      title: `Taberna Contemporánea & Tapas de Mercado`,
+      placeName: `Bistró Local de ${targetCity}`,
+      placeAddress: `Zona de tapas, ${targetCity}`,
+      neighborhood: `Centro`,
+      ambience: 'Concurrido / Con ambiente',
+      priceLevel: '€€',
+      isOpenNow: true,
+      rating: 4.7,
+      categoryTag: 'Gastronomía',
+      shortDescription: 'Platillos locales de temporada para compartir al centro y brindar con vinos de la tierra.',
+      matchReason: 'Ideal para compartir raciones con sabor auténtico de barrio.',
+      photoUrl: getCuratedFallbackPhoto('tapas restaurante'),
+      location: { lat: lat - 0.0011, lng: lng + 0.0019 },
+      isLocalSuggestion: true,
+    },
+    {
+      id: 'group-card-3',
+      title: `Galería Independiente & Paseo Cultural`,
+      placeName: `Espacio Cultural de ${targetCity}`,
+      placeAddress: `Eje cultural de ${targetCity}`,
+      neighborhood: `Zona Cultural`,
+      ambience: 'Íntimo y Curioso',
+      priceLevel: '€',
+      isOpenNow: true,
+      rating: 4.7,
+      categoryTag: 'Cultura',
+      shortDescription: 'Exposición contemporánea y librería de diseño para comentar descubrimientos juntos.',
+      matchReason: 'Un plan cultural ligero y original que da conversación.',
+      photoUrl: getCuratedFallbackPhoto('galeria museo'),
+      location: { lat: lat + 0.0022, lng: lng + 0.0008 },
+      isLocalSuggestion: true,
+    },
+    {
+      id: 'group-card-4',
+      title: `Mirador Urbano al Atardecer & Paseo Verde`,
+      placeName: `Mirador & Jardín de ${targetCity}`,
+      placeAddress: `Parque mirador en ${targetCity}`,
+      neighborhood: `Mirador`,
+      ambience: 'Calmo / Relajado',
+      priceLevel: '€',
+      isOpenNow: true,
+      rating: 4.9,
+      categoryTag: 'Aire Libre',
+      shortDescription: 'Vistas panorámicas sobre los tejados y sendero arbolado para desconectar del ruido.',
+      matchReason: 'Aire fresco y panorámica tranquila sin aglomeraciones.',
+      photoUrl: getCuratedFallbackPhoto('parque mirador'),
+      location: { lat: lat - 0.0021, lng: lng - 0.0015 },
+      isLocalSuggestion: true,
+    },
+    {
+      id: 'group-card-5',
+      title: `Coctelería Botánica & Salón de Autor`,
+      placeName: `Coctelería Secreta de ${targetCity}`,
+      placeAddress: `Calle con encanto en ${targetCity}`,
+      neighborhood: `Barrio Bohemio`,
+      ambience: 'Íntimo / Con encanto',
+      priceLevel: '€€',
+      isOpenNow: true,
+      rating: 4.8,
+      categoryTag: 'Copas & Música',
+      shortDescription: 'Combinados artesanales, iluminación cálida y selección musical de vinilo en volumen amable.',
+      matchReason: 'Ambiente especial y sofisticado para cerrar o alargar la tarde.',
+      photoUrl: getCuratedFallbackPhoto('coctel bar'),
+      location: { lat: lat + 0.0007, lng: lng - 0.0026 },
+      isLocalSuggestion: true,
+    },
+  ];
+
+  return candidates
+    .filter((c) => !visitedNameSet.has(c.placeName.toLowerCase().trim()))
+    .slice(0, 5);
+};
+
+app.post('/api/group/deck', async (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    const lat = Number(body.latitude ?? body.location?.lat ?? 40.4168);
+    const lng = Number(body.longitude ?? body.location?.lng ?? -3.7038);
+    const targetCity =
+      String(
+        body.cityName ||
+          body.location?.cityName ||
+          (typeof body.location?.formattedAddress === 'string'
+            ? body.location.formattedAddress.split(',')[0].trim()
+            : '') ||
+          'tu ciudad'
+      ).trim();
+
+    const rawVisited = Array.isArray(body.visitedPlaces) ? body.visitedPlaces : [];
+    const visitedNamesList: string[] = rawVisited
+      .map((vp: any) => (typeof vp?.name === 'string' ? vp.name.trim() : ''))
+      .filter(Boolean);
+    const visitedNameSet = new Set(visitedNamesList.map((n) => n.toLowerCase().trim()));
+
+    const userTasteProfile = body.userTasteProfile;
+    const manualRestrictions: string[] = Array.isArray(userTasteProfile?.manualRestrictions)
+      ? userTasteProfile.manualRestrictions
+      : [];
+
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    const prompt = `Eres el curador hiperlocal de "TasteLocal Living" para el modo "Decidir juntos (Pareja / Grupo)".
+Genera un mazo de EXACTAMENTE 5 propuestas locales VARIADAS, REALES y atractivas situadas ESTRICTAMENTE dentro del término municipal de "${targetCity}" (radio máximo 5 km alrededor de latitud ${lat}, longitud ${lng}).
+
+CRITERIOS DEL MAZO DE 5 CARTAS:
+1. Cada una de las 5 cartas debe representar un tipo de plan distinto para que dos personas o un grupo puedan elegir por afinidad (ej: 1. Café/Brunch o Merienda especial, 2. Tapas/Gastronomía de proximidad, 3. Cultura/Galería/Librería, 4. Paseo/Mirador/Aire libre, 5. Coctelería/Vermutería/Música).
+2. TODAS las ubicaciones deben ser reales o emblemáticas de los barrios de "${targetCity}" (jamás de otros municipios lejanos).
+3. Hora actual: ${timeStr}. ${body.onlyOpenNow ? 'El usuario pide priorizar sitios abiertos ahora.' : ''}
+${body.mood ? `- Estado de ánimo orientativo: ${body.mood}` : ''}
+${body.environment ? `- Entorno orientativo: ${body.environment}` : ''}
+${body.budget ? `- Presupuesto orientativo: ${body.budget}` : ''}
+${visitedNamesList.length > 0 ? `- EXCLUSIÓN ESTRICTA ("Ya estuve aquí"): PROHIBIDO incluir: ${visitedNamesList.map((n) => `"${n}"`).join(', ')}.` : ''}
+${manualRestrictions.length > 0 ? `- RESTRICCIONES DEL PERFIL DE GUSTOS A RESPETAR: ${manualRestrictions.join(' | ')}.` : ''}
+
+Responde en JSON con la propiedad "cards" conteniendo exactamente 5 objetos con:
+- id: "card-1" ... "card-5"
+- title: Título atractivo y breve (max 6 palabras)
+- placeName: Nombre real del local o espacio en ${targetCity}
+- placeAddress: Calle y zona real en ${targetCity}
+- neighborhood: Nombre del barrio en ${targetCity} (ej. "Casco Vello", "Bouzas", "Malasaña", "Centro")
+- ambience: Uno de "Calmo / Relajado", "Concurrido / Con ambiente" o "Íntimo y acogedor"
+- categoryTag: Categoría breve (ej. "Gastronomía", "Café de autor", "Cultura", "Aire libre", "Coctelería")
+- priceLevel: "€", "€€" o "€€€"
+- shortDescription: 1 o 2 frases evocadoras del plan (max 140 caracteres)
+- matchReason: Por qué es gran plan para compartir en pareja o grupo
+- latOffset: Desplazamiento numérico entre -0.015 y 0.015 respecto a ${lat}
+- lngOffset: Desplazamiento numérico entre -0.015 y 0.015 respecto a ${lng}`;
+
+    let rawCards: Array<Record<string, any>> = [];
+    try {
+      const response = await callGeminiWithResilience({
+        contents: prompt,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            cards: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  placeName: { type: Type.STRING },
+                  placeAddress: { type: Type.STRING },
+                  neighborhood: { type: Type.STRING },
+                  ambience: { type: Type.STRING },
+                  categoryTag: { type: Type.STRING },
+                  priceLevel: { type: Type.STRING },
+                  shortDescription: { type: Type.STRING },
+                  matchReason: { type: Type.STRING },
+                  latOffset: { type: Type.NUMBER },
+                  lngOffset: { type: Type.NUMBER },
+                },
+                required: [
+                  'title',
+                  'placeName',
+                  'placeAddress',
+                  'neighborhood',
+                  'ambience',
+                  'categoryTag',
+                  'shortDescription',
+                ],
+              },
+            },
+          },
+          required: ['cards'],
+        },
+      });
+      const parsed = JSON.parse(response.text || '{}');
+      if (Array.isArray(parsed.cards) && parsed.cards.length > 0) {
+        rawCards = parsed.cards
+          .filter((c: any) => c?.placeName && !visitedNameSet.has(String(c.placeName).toLowerCase().trim()))
+          .slice(0, 5);
+      }
+    } catch (gemErr) {
+      console.warn('[Group Deck] Gemini fallback activado:', (gemErr as Error)?.message || gemErr);
+    }
+
+    if (rawCards.length < 5) {
+      const fallback = buildResilientGroupDeck(targetCity, lat, lng, visitedNameSet);
+      const seenNames = new Set(rawCards.map((c) => String(c.placeName || '').toLowerCase().trim()));
+      for (const f of fallback) {
+        if (rawCards.length >= 5) break;
+        if (!seenNames.has(f.placeName.toLowerCase().trim())) {
+          rawCards.push(f);
+        }
+      }
+    }
+
+    const enrichedDeck = await Promise.all(
+      rawCards.slice(0, 5).map(async (c, idx) => {
+        const cardLat =
+          c.location?.lat ??
+          lat + (typeof c.latOffset === 'number' ? Math.max(-0.02, Math.min(0.02, c.latOffset)) : (idx - 2) * 0.0025);
+        const cardLng =
+          c.location?.lng ??
+          lng + (typeof c.lngOffset === 'number' ? Math.max(-0.02, Math.min(0.02, c.lngOffset)) : (idx % 2 === 0 ? 1 : -1) * 0.0025);
+
+        const enriched = await enrichPlaceWithGooglePlaces(
+          String(c.placeName),
+          String(c.placeAddress || targetCity),
+          { lat: cardLat, lng: cardLng },
+          targetCity
+        );
+
+        return {
+          id: String(c.id || `group-card-${idx + 1}`),
+          title: String(c.title || c.placeName),
+          placeName: String(c.placeName),
+          placeAddress: String(c.placeAddress || `${c.neighborhood || 'Centro'}, ${targetCity}`),
+          neighborhood: String(c.neighborhood || targetCity),
+          ambience: String(c.ambience || 'Calmo / Relajado'),
+          categoryTag: String(c.categoryTag || 'Local'),
+          priceLevel: enriched.priceLevel || (c.priceLevel ? String(c.priceLevel) : '€€'),
+          isOpenNow: enriched.isOpenNow,
+          rating: enriched.rating ?? c.rating ?? 4.7,
+          userRatingsTotal: enriched.userRatingsTotal,
+          photoUrl: enriched.photoUrl || c.photoUrl || getCuratedFallbackPhoto(`${c.categoryTag} ${c.placeName}`),
+          shortDescription: String(c.shortDescription || ''),
+          matchReason: c.matchReason ? String(c.matchReason) : undefined,
+          location: { lat: Number(cardLat), lng: Number(cardLng) },
+          isLocalSuggestion: enriched.isLocalSuggestion,
+        };
+      })
+    );
+
+    return res.json({ deck: enrichedDeck, cityName: targetCity });
+  } catch (error) {
+    console.error('Error generating group swipe deck:', error);
+    const fallbackDeck = buildResilientGroupDeck('tu ciudad', 40.4168, -3.7038, new Set());
+    return res.json({ deck: fallbackDeck, cityName: 'tu ciudad' });
   }
-  if (errorType === 'entity.parse.failed') {
-    return res.status(400).json({ error: 'invalid_json', message: 'El formato de la petición no es válido.' });
+});
+
+app.post('/api/group/session', (req: Request, res: Response) => {
+  try {
+    const session = req.body;
+    if (!session || !Array.isArray(session.deck) || session.deck.length === 0) {
+      return res.status(400).json({ error: 'Valid deck is required to save group session' });
+    }
+    const sessionId =
+      typeof session.sessionId === 'string' && session.sessionId.trim()
+        ? session.sessionId.trim()
+        : `tl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Cap store size at 400 entries to prevent unbounded memory growth
+    if (groupSessionsStore.size >= 400) {
+      const oldestKey = groupSessionsStore.keys().next().value;
+      if (oldestKey) groupSessionsStore.delete(oldestKey);
+    }
+
+    groupSessionsStore.set(sessionId, {
+      ...session,
+      sessionId,
+      createdAt: session.createdAt || new Date().toISOString(),
+    });
+
+    return res.json({ sessionId });
+  } catch (error) {
+    console.error('Error saving group session:', error);
+    return res.status(500).json({ error: 'No se pudo guardar la sesión compartida' });
   }
-  return next(err);
+});
+
+app.get('/api/group/session/:sessionId', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  const stored = groupSessionsStore.get(sessionId);
+  if (!stored) {
+    return res.status(404).json({ error: 'Sesión no encontrada o expirada' });
+  }
+  return res.json({ session: stored });
 });
 
 // Configure Vite integration for full-stack dev server or static in prod

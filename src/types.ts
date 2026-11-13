@@ -1,4 +1,4 @@
-export type Page = 'welcome' | 'home' | 'itinerary';
+export type Page = 'welcome' | 'home' | 'itinerary' | 'group';
 
 export interface UserLocation {
   lat: number;
@@ -43,6 +43,26 @@ export interface UserAffinities {
   lastUpdated: string;
 }
 
+export interface VisitedPlace {
+  id: string;
+  name: string;
+  address?: string;
+  cityName?: string;
+  visitedAt: string; // ISO date
+}
+
+export interface UserTasteProfile {
+  preferredCategories: Record<string, number>;
+  preferredMoods: Record<string, number>;
+  preferredEnergyLevels: number[];
+  averageEnergy: number;
+  recurringPreferences: string[];
+  manualRestrictions: string[];
+  summary: string;
+  totalInteractions: number;
+  lastUpdated: string;
+}
+
 export type ExperienceMode = 'single' | 'chained';
 
 export interface Mobility {
@@ -68,6 +88,7 @@ export interface SearchCriteria {
   latitude?: number;
   longitude?: number;
   allowSurroundings?: boolean;
+  onlyOpenNow?: boolean; // Filtro "Solo abiertos ahora"
   timePeriod?: 'morning' | 'midday' | 'afternoon' | 'night';
   userAffinities?: {
     topEnvironments: string[];
@@ -77,6 +98,13 @@ export interface SearchCriteria {
     totalSearches: number;
     totalSavedExperiences?: number;
     summaryNarrative?: string;
+  };
+  visitedPlaces?: Array<{ id: string; name: string }>;
+  userTasteProfile?: {
+    summary: string;
+    manualRestrictions: string[];
+    recurringPreferences: string[];
+    averageEnergy: number;
   };
   isSurpriseMe?: boolean;
   experienceMode?: ExperienceMode;
@@ -96,6 +124,10 @@ export interface Plan {
   description?: string;
   location: UserLocation;
   rating?: number;
+  userRatingsTotal?: number;
+  priceLevel?: string;
+  isOpenNow?: boolean;
+  isLocalSuggestion?: boolean;
   address?: string;
   types?: string[];
   photoUrl?: string;
@@ -125,6 +157,11 @@ export interface ScheduleItem {
   routeInfo?: RouteInfo;
   description?: string;
   rating?: number;
+  userRatingsTotal?: number;
+  priceLevel?: string;
+  isOpenNow?: boolean;
+  isLocalSuggestion?: boolean;
+  photoUrl?: string;
   phoneNumber?: string;
   websiteUri?: string;
   allowsDogs?: boolean;
@@ -146,6 +183,12 @@ export interface PlanDetails {
   title: string;
   shortDescription: string;
   schedule: ScheduleItem[];
+  photoUrl?: string;
+  isOpenNow?: boolean;
+  rating?: number;
+  userRatingsTotal?: number;
+  priceLevel?: string;
+  isLocalSuggestion?: boolean;
 }
 
 export interface PremiumContingencyPlan extends PlanDetails {
@@ -166,6 +209,12 @@ export interface ProposalPlan extends PlanDetails {
   accessibilityInfo?: string; // e.g. "Acceso peatonal accesible y sin desniveles pronunciados"
   isPlanB?: boolean;
   experienceMode?: ExperienceMode;
+  photoUrl?: string;
+  isOpenNow?: boolean;
+  rating?: number;
+  userRatingsTotal?: number;
+  priceLevel?: string;
+  isLocalSuggestion?: boolean;
 }
 
 export interface GeneratedItinerary {
@@ -189,3 +238,35 @@ export interface WeatherInfo {
   isRainy?: boolean;
   isHot?: boolean;
 }
+
+export interface SwipeCardItem {
+  id: string;
+  title: string;
+  placeName: string;
+  placeAddress: string;
+  neighborhood: string;
+  ambience: string;
+  priceLevel?: string;
+  isOpenNow?: boolean;
+  rating?: number;
+  userRatingsTotal?: number;
+  photoUrl: string;
+  shortDescription: string;
+  matchReason?: string;
+  categoryTag: string;
+  location: { lat: number; lng: number };
+  estimatedDuration?: string;
+  isLocalSuggestion?: boolean;
+}
+
+export type SwipeVote = 'like' | 'pass';
+
+export interface GroupSwipeSession {
+  sessionId: string;
+  cityName: string;
+  deck: SwipeCardItem[];
+  p1Votes: Record<string, SwipeVote>;
+  p2Votes?: Record<string, SwipeVote>;
+  createdAt: string;
+}
+

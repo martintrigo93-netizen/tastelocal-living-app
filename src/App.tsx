@@ -4,6 +4,8 @@ import ItineraryPage from './components/ItineraryPage';
 import WelcomePage from './components/WelcomePage';
 import ConfigurationErrorPage from './components/ConfigurationErrorPage';
 import ErrorBoundary from './components/ErrorBoundary';
+import PreferencesModal from './components/PreferencesModal';
+import GroupMatchView from './components/GroupMatchView';
 import { AppProvider, useAppContext } from './context/AppContext';
 import { areApiKeysConfigured } from './config';
 
@@ -14,25 +16,46 @@ import { areApiKeysConfigured } from './config';
  * 3. ItineraryPage (DISCOVER & EXPERIENCE: 3 Propuestas curadas, mapa interactivo y ficha editorial)
  */
 const AppContent: React.FC = () => {
-  const { page, userLocation } = useAppContext();
+  const {
+    page,
+    userLocation,
+    isPreferencesModalOpen,
+    setIsPreferencesModalOpen,
+  } = useAppContext();
 
   if (!areApiKeysConfigured()) {
     return <ConfigurationErrorPage />;
   }
 
-  // Si el usuario está en bienvenida o aún no ha seleccionado su ubicación de partida
-  if (page === 'welcome' || !userLocation) {
-    return <WelcomePage />;
-  }
+  const renderPage = () => {
+    if (page === 'group') {
+      return <GroupMatchView />;
+    }
 
-  switch (page) {
-    case 'home':
-      return <HomePage />;
-    case 'itinerary':
-      return <ItineraryPage />;
-    default:
-      return <HomePage />;
-  }
+    // Si el usuario está en bienvenida o aún no ha seleccionado su ubicación de partida
+    if (page === 'welcome' || !userLocation) {
+      return <WelcomePage />;
+    }
+
+    switch (page) {
+      case 'home':
+        return <HomePage />;
+      case 'itinerary':
+        return <ItineraryPage />;
+      default:
+        return <HomePage />;
+    }
+  };
+
+  return (
+    <>
+      {renderPage()}
+      <PreferencesModal
+        isOpen={isPreferencesModalOpen}
+        onClose={() => setIsPreferencesModalOpen(false)}
+      />
+    </>
+  );
 };
 
 const App: React.FC = () => {

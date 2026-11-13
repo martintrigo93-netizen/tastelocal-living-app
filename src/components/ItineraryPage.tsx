@@ -58,6 +58,9 @@ const ItineraryPage: React.FC = () => {
     savedPlans,
     isSavedPlansModalOpen,
     setIsSavedPlansModalOpen,
+    visitedPlaces,
+    userTasteProfile,
+    setIsPreferencesModalOpen,
     searchCriteria,
   } = useAppContext();
   const [selectedPlanIndex, setSelectedPlanIndex] = useState<number>(0);
@@ -207,6 +210,22 @@ const ItineraryPage: React.FC = () => {
             matchReason={activePlan.matchReason}
             experienceNarrative={activePlan.experienceNarrative}
           />
+
+          {/* 🎛️ Mis Preferencias Button */}
+          <button
+            type="button"
+            onClick={() => setIsPreferencesModalOpen(true)}
+            className="flex items-center gap-1.5 py-1.5 px-2.5 sm:px-3 rounded-xl bg-white/[0.05] hover:bg-[#FF5E2B]/15 border border-white/10 hover:border-[#FF5E2B]/40 text-xs font-bold text-gray-300 hover:text-white transition cursor-pointer"
+            title="Mi Perfil de Gustos y Sitios Visitados"
+          >
+            <span>🎛️</span>
+            <span className="hidden xl:inline">Mis Preferencias</span>
+            {userTasteProfile.manualRestrictions.length + visitedPlaces.length > 0 && (
+              <span className="bg-white/15 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full min-w-[18px] text-center">
+                {userTasteProfile.manualRestrictions.length + visitedPlaces.length}
+              </span>
+            )}
+          </button>
 
           {/* ❤️ Mis Planes Button */}
           <button

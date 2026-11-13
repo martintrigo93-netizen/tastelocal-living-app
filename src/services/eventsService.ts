@@ -68,6 +68,17 @@ export function getEventBasedSearchQueries(
     queries.push('rincón romántico acogedor', 'terraza con velas o vistas íntimas');
   } else if (criteria.company === 'Con amigos') {
     queries.push('terraza animada de reunión', 'actividad divertida en grupo');
+  } else if (criteria.company === 'En Familia') {
+    queries.push(
+      'restaurante amplio familiar con terraza tranquila',
+      'centro cultural interactivo o paseo accesible mirador'
+    );
+  } else if (criteria.company === 'Con Niños') {
+    queries.push(
+      'parque infantil con zona de juegos segura',
+      'cafetería family friendly terraza peatonal',
+      'museo interactivo o ruta natural corta'
+    );
   } else if (criteria.company === 'Con mascota') {
     queries.push('parque o terraza pet-friendly con encanto', 'cafetería con terraza dog-friendly');
   } else if (criteria.company === 'En solitario') {

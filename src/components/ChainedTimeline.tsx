@@ -2,6 +2,7 @@ import React from 'react';
 import { type ScheduleItem, type UserLocation } from '../types';
 import { getGoogleMapsFullChainedWalkingUrl } from './Map';
 import { getAmbienceTag } from './ItineraryPage';
+import { useAppContext } from '../context/AppContext';
 
 interface ChainedTimelineProps {
   schedule: ScheduleItem[];
@@ -29,7 +30,10 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
   energyRequired,
   isPetFilterActive = false,
 }) => {
+  const { isPlaceVisited, toggleVisitedPlace, searchCriteria } = useAppContext();
   const isChained = schedule.length >= 2;
+  const isFamilyOrKids =
+    searchCriteria?.company === 'En Familia' || searchCriteria?.company === 'Con Niños';
   const fullWalkingRouteUrl = getGoogleMapsFullChainedWalkingUrl(schedule, userLocation);
 
   return (
@@ -45,7 +49,11 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
           </h4>
         </div>
         <span className="text-[10px] text-gray-400 font-mono bg-white/[0.04] px-2.5 py-0.5 rounded-full border border-white/5">
-          {isChained ? '≤ 15 min caminando entre paradas' : '1 parada principal'}
+          {isChained
+            ? isFamilyOrKids
+              ? '≤ 15 min • Ritmo pausado'
+              : '≤ 15 min caminando entre paradas'
+            : '1 parada principal'}
         </span>
       </div>
 
@@ -56,8 +64,9 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
 
         {schedule.map((item, index) => {
           const stopNumber = item.order || index + 1;
-          const thumbnail = getStopThumbnail(item, index);
+          const thumbnail = item.photoUrl || getStopThumbnail(item, index);
           const stopAmbience = getAmbienceTag(item, energyRequired);
+          const visited = isPlaceVisited(item.placeId, item.placeName);
 
           // URL individual para "Cómo llegar" directo a esta parada
           const singleNavUrl = item.location
@@ -65,7 +74,13 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
             : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.placeName} ${item.placeAddress || ''}`)}`;
 
           // Indicador de tiempo a pie desde la parada anterior
-          const walkFromPrev = item.walkingTimeFromPrevious || (index === 0 ? 'Punto de inicio' : `${7 + index * 2} min caminando`);
+          const walkFromPrev =
+            item.walkingTimeFromPrevious ||
+            (index === 0
+              ? 'Punto de inicio'
+              : isFamilyOrKids
+              ? `${9 + index * 2} min caminando (ritmo pausado)`
+              : `${7 + index * 2} min caminando`);
 
           return (
             <div key={(item.placeId || 'stop') + index} className="relative space-y-3">
@@ -79,14 +94,18 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
                 <div className="inline-flex items-center gap-1.5 py-1 px-2.5 rounded-lg bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 text-[10px] font-bold text-[#FF5E2B] -mt-2 mb-1 shadow-xs">
                   <span>🚶</span>
                   <span>{walkFromPrev}</span>
-                  <span className="text-gray-400 font-normal">• Mismo barrio</span>
+                  <span className="text-gray-400 font-normal">
+                    {isFamilyOrKids && !/pausad|tranquil|familia|peque/i.test(walkFromPrev)
+                      ? '• Ritmo pausado'
+                      : '• Mismo barrio'}
+                  </span>
                 </div>
               )}
 
               {/* Tarjeta de la Parada */}
               <article className="p-4 sm:p-5 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-[#FF5E2B]/40 transition-all duration-300 flex flex-col sm:flex-row items-start sm:items-center gap-4 group backdrop-blur-md">
                 {/* Fotografía de la parada */}
-                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden flex-shrink-0 border border-white/10 relative">
+                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl overflow-hidden flex-shrink-0 border border-white/10 relative bg-[#0B0C0E]">
                   <img
                     src={thumbnail}
                     alt={item.placeName}
@@ -110,6 +129,31 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
                       Parada 0{stopNumber}
                     </span>
 
+                    {/* Badge Abierto Ahora / Consultar Horario */}
+                    {item.isOpenNow === true ? (
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center gap-1 shadow-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>Abierto ahora</span>
+                      </span>
+                    ) : item.isOpenNow === false ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-red-500/20 border border-red-500/40 text-red-300 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                        <span>Cerrado ahora</span>
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        <span>Consultar horario</span>
+                      </span>
+                    )}
+
+                    {/* Nivel de Precio (€, €€, €€€) */}
+                    {item.priceLevel && (
+                      <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-[#FF5E2B]/15 border border-[#FF5E2B]/30 text-[#FF5E2B]">
+                        {item.priceLevel}
+                      </span>
+                    )}
+
                     {/* Badge de Ambiente */}
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border flex items-center gap-1 ${stopAmbience.badgeClass}`}>
                       <span>{stopAmbience.emoji}</span>
@@ -131,6 +175,14 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
                         <span>Accesible</span>
                       </span>
                     )}
+
+                    {/* Sugerencia Local */}
+                    {item.isLocalSuggestion && (
+                      <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-md bg-white/5 border border-white/10 text-gray-400 flex items-center gap-1">
+                        <span>✨</span>
+                        <span>Sugerencia local</span>
+                      </span>
+                    )}
                   </div>
 
                   {/* Nombre y Actividad */}
@@ -146,11 +198,17 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
                     📍 {item.placeAddress || 'Ubicación local en el barrio'}
                   </p>
 
-                  {/* Valoración y notas */}
+                  {/* Valoración y notas reales */}
                   {item.rating && (
                     <div className="flex items-center gap-2 pt-0.5">
-                      <span className="text-[10px] text-gray-400">
-                        ⭐ {item.rating.toFixed(1)} / 5
+                      <span className="text-[11px] text-gray-200 font-bold flex items-center gap-1">
+                        <span className="text-amber-400">★</span>
+                        <span>{item.rating.toFixed(1)}</span>
+                        {item.userRatingsTotal && (
+                          <span className="text-gray-400 font-normal text-[10px]">
+                            ({item.userRatingsTotal})
+                          </span>
+                        )}
                       </span>
                     </div>
                   )}
@@ -163,16 +221,45 @@ export const ChainedTimeline: React.FC<ChainedTimelineProps> = ({
 
                   {/* Botones de acción directos por parada */}
                   <div className="pt-2.5 mt-1 border-t border-white/5 flex items-center justify-between gap-2 flex-wrap">
-                    <a
-                      href={singleNavUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="py-1.5 px-3 rounded-xl bg-[#FF5E2B]/15 hover:bg-[#FF5E2B] text-[#FF5E2B] hover:text-white transition text-xs font-bold flex items-center gap-1.5 cursor-pointer min-h-[38px] active:scale-95 shadow-xs"
-                      title="Cómo llegar a esta parada en Google Maps"
-                    >
-                      <span className="text-xs">🧭</span>
-                      <span>Cómo llegar a Parada {stopNumber}</span>
-                    </a>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <a
+                        href={singleNavUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-1.5 px-3 rounded-xl bg-[#FF5E2B]/15 hover:bg-[#FF5E2B] text-[#FF5E2B] hover:text-white transition text-xs font-bold flex items-center gap-1.5 cursor-pointer min-h-[38px] active:scale-95 shadow-xs"
+                        title="Cómo llegar a esta parada en Google Maps"
+                      >
+                        <span className="text-xs">🧭</span>
+                        <span>Cómo llegar a Parada {stopNumber}</span>
+                      </a>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toggleVisitedPlace({
+                            id: item.placeId,
+                            name: item.placeName,
+                            address: item.placeAddress,
+                            cityName: searchCriteria?.cityName || userLocation?.cityName,
+                          })
+                        }
+                        className={`py-1.5 px-2.5 rounded-xl transition text-[11px] font-semibold flex items-center gap-1.5 border cursor-pointer min-h-[38px] active:scale-95 ${
+                          visited
+                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                            : 'bg-white/[0.03] hover:bg-white/10 border-white/10 text-gray-400 hover:text-white'
+                        }`}
+                        title={
+                          visited
+                            ? 'Marcado como ya visitado (excluido en futuras búsquedas)'
+                            : 'Marcar como ya visitado para descubrir sitios nuevos'
+                        }
+                      >
+                        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>{visited ? 'Visitado (Excluido)' : 'Ya estuve aquí'}</span>
+                      </button>
+                    </div>
 
                     <div className="flex items-center gap-1">
                       {item.phoneNumber && (

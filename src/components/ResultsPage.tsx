@@ -69,12 +69,18 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
     savePlan,
     removeSavedPlan,
     isPlanSaved,
+    isPlaceVisited,
+    toggleVisitedPlace,
     searchCriteria,
     itinerary,
   } = useAppContext();
 
   const activePlan = proposals[selectedPlanIndex] || proposals[0];
+  const primaryStop = activePlan.schedule[0];
   const isSaved = isPlanSaved(activePlan.id);
+  const isPrimaryVisited = primaryStop
+    ? isPlaceVisited(primaryStop.placeId, primaryStop.placeName)
+    : false;
   const isPetFilterActive = searchCriteria?.company === 'Con mascota';
 
   const toggleFavorite = () => {
@@ -186,15 +192,106 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
         </div>
       )}
 
-      {/* Tarjeta de la Propuesta Activa */}
-      <article className="p-5 sm:p-6 rounded-3xl bg-white/[0.03] border border-white/10 shadow-2xl space-y-4 animate-fade-in relative overflow-hidden backdrop-blur-md">
-        {/* Cabecera de la Tarjeta con Badges y Acciones */}
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs uppercase tracking-widest font-black text-[#FF5E2B] bg-[#FF5E2B]/15 border border-[#FF5E2B]/30 px-3 py-1 rounded-full">
+      {/* Tarjeta de la Propuesta Activa con Fotografía Real y Degradado a Negro Ónix */}
+      <article className="rounded-3xl bg-white/[0.03] border border-white/10 shadow-2xl space-y-4 animate-fade-in relative overflow-hidden backdrop-blur-md p-5 sm:p-6">
+        {/* Cabecera con Fotografía Real del Establecimiento y Degradado Suave hacia Negro Ónix (#0F1015) */}
+        <div className="relative -mx-5 -mt-5 sm:-mx-6 sm:-mt-6 h-52 sm:h-64 overflow-hidden rounded-t-3xl bg-[#0B0C0E] mb-4">
+          <img
+            src={activePlan.photoUrl || activePlan.schedule[0]?.photoUrl || getPlaceCoverImage(activePlan.schedule[0], selectedPlanIndex)}
+            alt={activePlan.schedule[0]?.placeName || activePlan.title}
+            className="w-full h-full object-cover transition-transform duration-700 hover:scale-105"
+            loading="lazy"
+          />
+          {/* Degradados oscuros suaves hacia Negro Ónix (#0F1015) */}
+          <div className="absolute inset-0 bg-gradient-to-t from-[#0F1015] via-[#0F1015]/60 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-r from-[#0F1015]/80 via-transparent to-transparent" />
+
+          {/* Badges superiores sobre la imagen */}
+          <div className="absolute top-4 left-4 right-4 flex items-center justify-between flex-wrap gap-2 z-10">
+            <span className="text-xs uppercase tracking-widest font-black text-[#FF5E2B] bg-[#0F1015]/80 border border-[#FF5E2B]/40 px-3 py-1 rounded-full shadow-md backdrop-blur-md">
               {activePlan.badge}
             </span>
 
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleFavorite}
+                className={`py-1.5 px-3 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 backdrop-blur-md cursor-pointer ${
+                  isSaved
+                    ? 'bg-[#FF5E2B]/30 border-[#FF5E2B] text-white'
+                    : 'bg-[#0F1015]/70 border-white/20 text-gray-200 hover:text-white hover:border-[#FF5E2B]/40'
+                }`}
+                title={isSaved ? 'Quitar de guardados' : 'Guardar en Mis Planes'}
+              >
+                <span>{isSaved ? '❤️' : '🤍'}</span>
+                <span className="hidden sm:inline">{isSaved ? 'Guardado' : 'Guardar'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onOpenShareModal}
+                className="py-1.5 px-3 rounded-xl bg-[#0F1015]/70 hover:bg-[#FF5E2B]/20 border border-white/20 hover:border-[#FF5E2B]/40 text-gray-200 hover:text-white text-xs font-bold transition flex items-center gap-1.5 backdrop-blur-md cursor-pointer"
+                title="Compartir postal"
+              >
+                <svg className="w-3.5 h-3.5 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                </svg>
+                <span>Compartir</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Badges de Enriquecimiento en Vivo: Abierto ahora, Rating, Precio, Sugerencia local */}
+          <div className="absolute bottom-3 left-4 right-4 flex items-center gap-2 flex-wrap z-10">
+            {/* Indicador Verde Abierto Ahora o Ámbar Consultar Horario */}
+            {activePlan.isOpenNow === true || activePlan.schedule[0]?.isOpenNow === true ? (
+              <span className="text-[11px] font-black px-2.5 py-1 rounded-lg bg-emerald-500/25 border border-emerald-500/50 text-emerald-300 backdrop-blur-md flex items-center gap-1.5 shadow-sm">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Abierto ahora</span>
+              </span>
+            ) : activePlan.isOpenNow === false || activePlan.schedule[0]?.isOpenNow === false ? (
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-red-500/20 border border-red-500/40 text-red-300 backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-red-400" />
+                <span>Cerrado ahora</span>
+              </span>
+            ) : (
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 backdrop-blur-md flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                <span>Consultar horario</span>
+              </span>
+            )}
+
+            {/* Valoración con Estrella y Total de Reseñas */}
+            {(activePlan.rating || activePlan.schedule[0]?.rating) && (
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-black/60 border border-white/15 text-white backdrop-blur-md flex items-center gap-1">
+                <span className="text-amber-400">★</span>
+                <span>
+                  {(activePlan.rating || activePlan.schedule[0]?.rating || 4.8).toFixed(1)}
+                  {activePlan.userRatingsTotal ? ` (${activePlan.userRatingsTotal})` : activePlan.schedule[0]?.userRatingsTotal ? ` (${activePlan.schedule[0]?.userRatingsTotal})` : ''}
+                </span>
+              </span>
+            )}
+
+            {/* Nivel de Precio (€, €€, €€€) */}
+            {(activePlan.priceLevel || activePlan.schedule[0]?.priceLevel) && (
+              <span className="text-[11px] font-black px-2.5 py-1 rounded-lg bg-[#FF5E2B]/20 border border-[#FF5E2B]/40 text-[#FF5E2B] backdrop-blur-md">
+                {activePlan.priceLevel || activePlan.schedule[0]?.priceLevel}
+              </span>
+            )}
+
+            {/* Sugerencia Local sutil */}
+            {(activePlan.isLocalSuggestion || activePlan.schedule[0]?.isLocalSuggestion) && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-white/10 border border-white/15 text-gray-300 backdrop-blur-md flex items-center gap-1">
+                <span>✨</span>
+                <span>Sugerencia local</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Fila de Metadatos Adicionales */}
+        <div className="flex items-center justify-between flex-wrap gap-2 pt-1 border-b border-white/[0.06] pb-3">
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Badge Plan B a Cubierto */}
             {(activePlan.isPlanB || weather?.isRainy || itinerary?.isPlanBActive) && (
               <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-500/15 border border-blue-500/30 text-blue-300 flex items-center gap-1">
@@ -222,34 +319,9 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
             </span>
           </div>
 
-          {/* Botones de Favorito y Compartir */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleFavorite}
-              className={`py-1.5 px-3 rounded-xl border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                isSaved
-                  ? 'bg-[#FF5E2B]/20 border-[#FF5E2B] text-[#FF5E2B]'
-                  : 'bg-white/5 border-white/10 text-gray-300 hover:text-white hover:border-white/30'
-              }`}
-              title={isSaved ? 'Quitar de guardados' : 'Guardar en Mis Planes'}
-            >
-              <span>{isSaved ? '❤️' : '🤍'}</span>
-              <span className="hidden sm:inline">{isSaved ? 'Guardado' : 'Guardar'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenShareModal}
-              className="py-1.5 px-3 rounded-xl bg-white/5 hover:bg-[#FF5E2B]/15 border border-white/10 hover:border-[#FF5E2B]/40 text-gray-300 hover:text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-              title="Compartir postal"
-            >
-              <svg className="w-3.5 h-3.5 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-              </svg>
-              <span>Compartir</span>
-            </button>
-          </div>
+          <span className="text-[11px] text-[#FF5E2B] font-bold font-mono">
+            {activePlan.budgetEstimate || 'Presupuesto moderado'}
+          </span>
         </div>
 
         {/* Título y Descripción Resumida */}
@@ -268,6 +340,41 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({
           onOpenShareModal={onOpenShareModal}
           className="pt-1 pb-1"
         />
+
+        {/* Botón Discreto "Ya estuve aquí" para la parada principal */}
+        {primaryStop && (
+          <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+            <span className="text-[11px] text-gray-400 truncate">
+              Lugar destacado: <strong className="text-gray-200 font-semibold">{primaryStop.placeName}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                toggleVisitedPlace({
+                  id: primaryStop.placeId,
+                  name: primaryStop.placeName,
+                  address: primaryStop.placeAddress,
+                  cityName: searchCriteria?.cityName || searchCriteria?.location?.cityName,
+                })
+              }
+              className={`py-1 px-2.5 rounded-lg border text-[11px] font-semibold transition flex items-center gap-1.5 flex-shrink-0 cursor-pointer active:scale-95 ${
+                isPrimaryVisited
+                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                  : 'bg-white/[0.04] hover:bg-white/10 border-white/10 text-gray-400 hover:text-white'
+              }`}
+              title={
+                isPrimaryVisited
+                  ? 'Excluido de futuras recomendaciones'
+                  : 'Marcar como visitado para no repetirlo en futuras búsquedas'
+              }
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+              </svg>
+              <span>{isPrimaryVisited ? 'Visitado (Excluido)' : 'Ya estuve aquí'}</span>
+            </button>
+          </div>
+        )}
 
         {/* Sección Requerida: "Por qué conecta con cómo te sientes hoy" */}
         <div className="p-4 rounded-2xl bg-[#FF5E2B]/[0.08] border border-[#FF5E2B]/25 space-y-2">

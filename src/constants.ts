@@ -63,6 +63,8 @@ export const COMPANY_OPTIONS: Company[] = [
   { label: 'En solitario', icon: '🧍' },
   { label: 'En pareja', icon: '💑' },
   { label: 'Con amigos', icon: '👥' },
+  { label: 'En Familia', icon: '👨‍👩‍👧‍👦' },
+  { label: 'Con Niños', icon: '🧸' },
   { label: 'Con mascota', icon: '🐾' },
 ];
 

@@ -89,6 +89,10 @@ const HomePage: React.FC = () => {
     userAffinities,
     isSavedPlansModalOpen,
     setIsSavedPlansModalOpen,
+    visitedPlaces,
+    userTasteProfile,
+    setIsPreferencesModalOpen,
+    handleStartGroupMode,
   } = useAppContext();
 
   const {
@@ -101,6 +105,7 @@ const HomePage: React.FC = () => {
     intensity,
     availableTime,
     experienceMode,
+    onlyOpenNow,
   } = formState;
 
   const [voiceInputStatus, setVoiceInputStatus] = useState<
@@ -108,6 +113,35 @@ const HomePage: React.FC = () => {
   >('idle');
   const [voiceConfirmation, setVoiceConfirmation] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [appShareFeedback, setAppShareFeedback] = useState<string>('');
+
+  const handleRecommendApp = async () => {
+    const shareUrl =
+      typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '';
+    const shareData = {
+      title: 'TasteLocal Living — Planes locales que sienten contigo',
+      text: 'Descubre rincones auténticos, rutas a medida y planes en pareja o grupo adaptados a tu energía y ubicación en tiempo real.',
+      url: shareUrl,
+    };
+
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share(shareData);
+        return;
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setAppShareFeedback('✓ Enlace copiado');
+      setTimeout(() => setAppShareFeedback(''), 2500);
+    } catch {
+      setAppShareFeedback('Enlace listo');
+      setTimeout(() => setAppShareFeedback(''), 2000);
+    }
+  };
 
   // Asegurar entorno predeterminado si no está seleccionado
   React.useEffect(() => {
@@ -231,6 +265,7 @@ const HomePage: React.FC = () => {
       mobility: activeMobility.label,
       availableTime: availableTime || '2-4h',
       experienceMode: experienceMode || 'chained',
+      onlyOpenNow: Boolean(onlyOpenNow),
       cityName: userLocation.cityName,
       isGpsActive,
       searchRadiusKm,
@@ -275,6 +310,21 @@ const HomePage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setIsPreferencesModalOpen(true)}
+            className="text-[11px] font-semibold text-gray-300 hover:text-white bg-white/[0.05] hover:bg-[#FF5E2B]/15 border border-white/10 hover:border-[#FF5E2B]/30 px-2.5 sm:px-3 py-1.5 rounded-full transition flex items-center gap-1.5 cursor-pointer"
+            title="Abrir Mi Perfil de Gustos y Sitios Visitados"
+          >
+            <span>🎛️</span>
+            <span className="hidden sm:inline">Mis Preferencias</span>
+            {userTasteProfile.manualRestrictions.length + visitedPlaces.length > 0 && (
+              <span className="bg-white/15 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full">
+                {userTasteProfile.manualRestrictions.length + visitedPlaces.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={() => setIsSavedPlansModalOpen(true)}
             className="text-[11px] font-semibold text-gray-300 hover:text-white bg-white/[0.05] hover:bg-[#FF5E2B]/15 border border-white/10 hover:border-[#FF5E2B]/30 px-3 py-1.5 rounded-full transition flex items-center gap-1.5 cursor-pointer"
             title="Ver mis experiencias guardadas"
@@ -296,6 +346,37 @@ const HomePage: React.FC = () => {
       <main className="flex-grow overflow-y-auto px-5 md:px-8 py-6 space-y-7 scrollbar-hide text-left max-w-4xl mx-auto w-full">
         {/* Widget de Geolocalización GPS en Tiempo Real & Fallback Suave */}
         <GpsLocationWidget />
+
+        {/* FASE 7: Acceso Directo "Decidir juntos (Modo Pareja / Grupo)" */}
+        <section>
+          <button
+            type="button"
+            onClick={() => handleStartGroupMode(userLocation || undefined)}
+            disabled={!userLocation}
+            className="w-full p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-[#FF5E2B]/15 via-white/[0.04] to-transparent border border-[#FF5E2B]/35 hover:border-[#FF5E2B] disabled:opacity-50 transition-all duration-200 flex items-center justify-between gap-4 text-left cursor-pointer group active:scale-[0.99] min-h-[72px]"
+          >
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div className="w-11 h-11 rounded-2xl bg-[#FF5E2B]/20 border border-[#FF5E2B]/40 flex items-center justify-center text-2xl flex-shrink-0">
+                🫂
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm sm:text-base font-black text-white group-hover:text-[#FF5E2B] transition-colors truncate">
+                  Decidir juntos (Modo Pareja / Grupo)
+                </h3>
+                <p className="text-xs text-gray-300 mt-0.5 line-clamp-1">
+                  Deslizad 5 propuestas locales en {userLocation?.cityName || 'tu zona'} y haced Match sin registros
+                </p>
+              </div>
+            </div>
+
+            <span className="py-2 px-3.5 rounded-xl bg-[#FF5E2B] group-hover:bg-[#E84D1C] text-white text-xs font-black whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm">
+              <span>Swipe & Match</span>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </span>
+          </button>
+        </section>
 
         {/* Banner de Aprendizaje Progresivo (Mood Intelligence) */}
         {userAffinities.totalSearches > 0 && (
@@ -544,11 +625,11 @@ const HomePage: React.FC = () => {
           </div>
         </section>
 
-        {/* Paso 3: Dial de Intensidad (1 al 10) */}
+        {/* Paso 4: Dial de Intensidad (1 al 10) */}
         <section className="space-y-3.5">
           <div>
             <span className="text-[10px] uppercase tracking-widest font-bold text-[#FF5E2B]">
-              Paso 03 • Nivel de Energía (Dial 1 al 10)
+              Paso 04 • Nivel de Energía (Dial 1 al 10)
             </span>
             <h2 className="text-xl font-black text-white tracking-tight mt-0.5">
               Ritmo e intensidad de la experiencia
@@ -605,11 +686,11 @@ const HomePage: React.FC = () => {
           </div>
         </section>
 
-        {/* Paso 4: Selector de Tiempo Disponible Requerido [< 2h, 2-4h, Día completo] */}
+        {/* Paso 5: Selector de Tiempo Disponible Requerido [< 2h, 2-4h, Día completo] */}
         <section className="space-y-3.5">
           <div>
             <span className="text-[10px] uppercase tracking-widest font-bold text-[#FF5E2B]">
-              Paso 04 • Tiempo Disponible
+              Paso 05 • Tiempo Disponible
             </span>
             <h2 className="text-xl font-black text-white tracking-tight mt-0.5">
               ¿De cuánto tiempo dispones?
@@ -646,11 +727,11 @@ const HomePage: React.FC = () => {
           </div>
         </section>
 
-        {/* Paso 5: Micro-selectores de TasteLocal Together & Presupuesto */}
+        {/* Paso 6: Micro-selectores de TasteLocal Together & Presupuesto */}
         <section className="space-y-4">
           <div>
             <span className="text-[10px] uppercase tracking-widest font-bold text-[#FF5E2B]">
-              Paso 05 • TasteLocal Together & Presupuesto
+              Paso 06 • TasteLocal Together & Presupuesto
             </span>
             <h2 className="text-xl font-black text-white tracking-tight mt-0.5">
               ¿Con quién vas a compartir el momento?
@@ -669,7 +750,7 @@ const HomePage: React.FC = () => {
                   {selectedCompany?.label || 'En solitario'}
                 </span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {COMPANY_OPTIONS.map((opt) => {
                   const isSelected = selectedCompany?.label === opt.label;
                   return (
@@ -690,7 +771,25 @@ const HomePage: React.FC = () => {
                 })}
               </div>
 
-              {/* Banner informativo de filtro pet-friendly activo y verificado */}
+              {/* Banner informativo contextual según el tipo de compañía */}
+              {selectedCompany?.label === 'En Familia' && (
+                <div className="mt-2.5 p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 flex items-center gap-2.5 text-xs text-gray-200 animate-fade-in shadow-sm">
+                  <span className="text-xl flex-shrink-0">👨‍👩‍👧‍👦</span>
+                  <p className="text-[11px] leading-snug">
+                    <strong className="text-[#FF5E2B]">Modo En Familia (Multigeneracional):</strong> Priorizamos restaurantes amplios, paseos accesibles sin grandes desniveles, espacios culturales y ritmo pausado disfrutable para todas las edades.
+                  </p>
+                </div>
+              )}
+
+              {selectedCompany?.label === 'Con Niños' && (
+                <div className="mt-2.5 p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 flex items-center gap-2.5 text-xs text-gray-200 animate-fade-in shadow-sm">
+                  <span className="text-xl flex-shrink-0">🧸</span>
+                  <p className="text-[11px] leading-snug">
+                    <strong className="text-[#FF5E2B]">Modo Con Niños (Cero Estrés):</strong> Priorizamos parques con zonas de juego, terrazas peatonalizadas sin tráfico, cafés family-friendly y tiempos de caminata más pausados, evitando locales nocturnos.
+                  </p>
+                </div>
+              )}
+
               {selectedCompany?.label === 'Con mascota' && (
                 <div className="mt-2.5 p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 flex items-center gap-2.5 text-xs text-gray-200 animate-fade-in shadow-sm">
                   <span className="text-xl flex-shrink-0">🐾</span>
@@ -730,8 +829,73 @@ const HomePage: React.FC = () => {
                 })}
               </div>
             </div>
+
+            {/* Filtro en Vivo: Solo Abiertos Ahora (Google Places API) */}
+            <div className="p-3.5 sm:p-4 rounded-2xl bg-white/[0.03] border border-white/10 hover:border-[#FF5E2B]/40 transition-all duration-300 flex items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg transition-all ${
+                    onlyOpenNow
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
+                      : 'bg-white/5 text-gray-400 border border-white/5'
+                  }`}
+                >
+                  <span>🕒</span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-bold text-white tracking-tight">Solo abiertos ahora</p>
+                    {onlyOpenNow && (
+                      <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 animate-pulse">
+                        En vivo
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-400 leading-snug">
+                    Filtra y descarta locales que estén cerrados en este momento
+                  </p>
+                </div>
+              </div>
+
+              {/* Interruptor Switch Accesible */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(onlyOpenNow)}
+                onClick={() => setFormState({ onlyOpenNow: !onlyOpenNow })}
+                className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  onlyOpenNow ? 'bg-[#FF5E2B] shadow-[0_0_12px_rgba(255,94,43,0.4)]' : 'bg-white/20'
+                }`}
+                title={onlyOpenNow ? 'Desactivar filtro solo abiertos ahora' : 'Activar filtro solo abiertos ahora'}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                    onlyOpenNow ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         </section>
+
+        {/* Pie discreto: Recomendar App & Versión */}
+        <div className="pt-2 pb-1 border-t border-white/[0.06] flex items-center justify-between gap-3 flex-wrap">
+          <button
+            type="button"
+            onClick={handleRecommendApp}
+            className="text-xs font-semibold text-gray-400 hover:text-[#FF5E2B] transition flex items-center gap-1.5 py-1.5 cursor-pointer"
+          >
+            <svg className="w-3.5 h-3.5 text-[#FF5E2B]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+            </svg>
+            <span>{appShareFeedback || 'Compartir TasteLocal Living'}</span>
+          </button>
+
+          <span className="text-[11px] font-mono text-gray-500">
+            v1.0 Production
+          </span>
+        </div>
       </main>
 
       {/* Botón de Enviar (Generar las 3 propuestas del Módulo Discover) */}
