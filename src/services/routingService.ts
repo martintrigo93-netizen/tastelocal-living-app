@@ -1,5 +1,26 @@
 import { GeneratedItinerary, WeatherInfo } from '../types';
-import { computeRouteProxy } from './apiProxy';
+import { computeRouteProxy, ApiClientError } from './apiProxy';
+
+function computeLocalFallbackRoute(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+  travelMode: 'WALKING' | 'TRANSIT' | 'DRIVING' | 'BICYCLING',
+  weatherAlert?: string
+) {
+  const latDiff = (lat2 - lat1) * 111;
+  const lngDiff = (lng2 - lng1) * 85;
+  const distKm = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+  const approxMin = Math.max(5, Math.round(distKm * (travelMode === 'WALKING' ? 12 : 3)));
+  return {
+    duration: `${approxMin} min aprox.`,
+    distance: `${distKm.toFixed(1)} km`,
+    travelMode,
+    weatherAlert,
+    suggestedPois: [],
+  };
+}
 
 export async function enrichItineraryWithRoutes(
   itinerary: GeneratedItinerary,
@@ -14,6 +35,12 @@ export async function enrichItineraryWithRoutes(
     },
   };
 
+  let rateLimited = false;
+  const weatherAlert =
+    weather && weather.isAvailable && weather.alertLevel !== 'clear' && weather.alertLevel !== 'unavailable'
+      ? `Condición: ${weather.summary}`
+      : undefined;
+
   const schedule = enrichedItinerary.mainPlan.schedule;
 
   for (let i = 1; i < schedule.length; i++) {
@@ -21,17 +48,24 @@ export async function enrichItineraryWithRoutes(
     const currentStop = schedule[i];
 
     if (prevStop.location && currentStop.location) {
+      if (rateLimited) {
+        currentStop.routeInfo = computeLocalFallbackRoute(
+          prevStop.location.lat,
+          prevStop.location.lng,
+          currentStop.location.lat,
+          currentStop.location.lng,
+          travelMode,
+          weatherAlert
+        );
+        continue;
+      }
+
       try {
         const routeData = await computeRouteProxy(
           prevStop.location,
           currentStop.location,
           travelMode
         );
-
-        let weatherAlert: string | undefined = undefined;
-        if (weather && weather.isAvailable && weather.alertLevel !== 'clear' && weather.alertLevel !== 'unavailable') {
-          weatherAlert = `Condición: ${weather.summary}`;
-        }
 
         currentStop.routeInfo = {
           duration: routeData.duration || '15 min aprox.',
@@ -42,18 +76,18 @@ export async function enrichItineraryWithRoutes(
           suggestedPois: routeData.suggestedPois || [],
         };
       } catch (err) {
+        if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
+          rateLimited = true;
+        }
         console.warn(`Could not compute route between stop ${i - 1} and ${i}:`, err);
-        const latDiff = (currentStop.location.lat - prevStop.location.lat) * 111;
-        const lngDiff = (currentStop.location.lng - prevStop.location.lng) * 85;
-        const distKm = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
-        const approxMin = Math.max(5, Math.round(distKm * (travelMode === 'WALKING' ? 12 : 3)));
-
-        currentStop.routeInfo = {
-          duration: `${approxMin} min aprox.`,
-          distance: `${distKm.toFixed(1)} km`,
+        currentStop.routeInfo = computeLocalFallbackRoute(
+          prevStop.location.lat,
+          prevStop.location.lng,
+          currentStop.location.lat,
+          currentStop.location.lng,
           travelMode,
-          suggestedPois: [],
-        };
+          weatherAlert
+        );
       }
     }
   }
@@ -69,6 +103,16 @@ export async function enrichItineraryWithRoutes(
       const prevStop = cSchedule[i - 1];
       const currentStop = cSchedule[i];
       if (prevStop.location && currentStop.location) {
+        if (rateLimited) {
+          currentStop.routeInfo = computeLocalFallbackRoute(
+            prevStop.location.lat,
+            prevStop.location.lng,
+            currentStop.location.lat,
+            currentStop.location.lng,
+            travelMode
+          );
+          continue;
+        }
         try {
           const routeData = await computeRouteProxy(
             prevStop.location,
@@ -82,8 +126,17 @@ export async function enrichItineraryWithRoutes(
             encodedPolyline: routeData.encodedPolyline,
             suggestedPois: [],
           };
-        } catch {
-          // ignore error for contingency plan
+        } catch (err) {
+          if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
+            rateLimited = true;
+          }
+          currentStop.routeInfo = computeLocalFallbackRoute(
+            prevStop.location.lat,
+            prevStop.location.lng,
+            currentStop.location.lat,
+            currentStop.location.lng,
+            travelMode
+          );
         }
       }
     }
@@ -97,6 +150,16 @@ export async function enrichItineraryWithRoutes(
         const prevStop = pSchedule[i - 1];
         const currentStop = pSchedule[i];
         if (prevStop.location && currentStop.location) {
+          if (rateLimited) {
+            currentStop.routeInfo = computeLocalFallbackRoute(
+              prevStop.location.lat,
+              prevStop.location.lng,
+              currentStop.location.lat,
+              currentStop.location.lng,
+              travelMode
+            );
+            continue;
+          }
           try {
             const routeData = await computeRouteProxy(
               prevStop.location,
@@ -110,17 +173,17 @@ export async function enrichItineraryWithRoutes(
               encodedPolyline: routeData.encodedPolyline,
               suggestedPois: [],
             };
-          } catch {
-            const latDiff = (currentStop.location.lat - prevStop.location.lat) * 111;
-            const lngDiff = (currentStop.location.lng - prevStop.location.lng) * 85;
-            const distKm = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
-            const approxMin = Math.max(5, Math.round(distKm * (travelMode === 'WALKING' ? 12 : 3)));
-            currentStop.routeInfo = {
-              duration: `${approxMin} min aprox.`,
-              distance: `${distKm.toFixed(1)} km`,
-              travelMode,
-              suggestedPois: [],
-            };
+          } catch (err) {
+            if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
+              rateLimited = true;
+            }
+            currentStop.routeInfo = computeLocalFallbackRoute(
+              prevStop.location.lat,
+              prevStop.location.lng,
+              currentStop.location.lat,
+              currentStop.location.lng,
+              travelMode
+            );
           }
         }
       }

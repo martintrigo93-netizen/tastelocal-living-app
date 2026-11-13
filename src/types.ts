@@ -134,6 +134,7 @@ export interface Plan {
   phoneNumber?: string;
   websiteUri?: string;
   allowsDogs?: boolean;
+  verifiedSource?: 'google_places' | 'openstreetmap';
   accessibilityOptions?: PlaceAccessibilityOptions;
 }
 
@@ -169,6 +170,7 @@ export interface ScheduleItem {
   accessibilityOptions?: PlaceAccessibilityOptions;
   order?: number;
   walkingTimeFromPrevious?: string;
+  verifiedSource?: 'google_places' | 'openstreetmap';
 }
 
 export interface SavedExperience {
@@ -225,6 +227,16 @@ export interface GeneratedItinerary {
   isGeographicallyOptimized?: boolean;
   isPlanBActive?: boolean;
   planBReason?: string;
+  aiFallbackNotice?: string;
+}
+
+export interface StructuredApiError {
+  code: string;
+  message: string;
+  requestId?: string;
+  retryable?: boolean;
+  suggestedRadiusKm?: number;
+  retryAfterSeconds?: number;
 }
 
 export interface WeatherInfo {
@@ -257,6 +269,7 @@ export interface SwipeCardItem {
   location: { lat: number; lng: number };
   estimatedDuration?: string;
   isLocalSuggestion?: boolean;
+  verifiedSource?: 'google_places' | 'openstreetmap';
 }
 
 export type SwipeVote = 'like' | 'pass';

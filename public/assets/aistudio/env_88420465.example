@@ -1,5 +1,0 @@
-# Plantilla sin credenciales. Copia a .env.local y completa localmente.
-# NO subas .env.local a Git ni lo compartas.
-GEMINI_API_KEY=
-GOOGLE_MAPS_API_KEY=
-OPENWEATHER_API_KEY=

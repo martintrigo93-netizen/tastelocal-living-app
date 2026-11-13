@@ -8,9 +8,89 @@ import {
   RouteInfo,
   SwipeCardItem,
   GroupSwipeSession,
+  StructuredApiError,
 } from '../types';
 
 const BASE_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
+export class ApiClientError extends Error {
+  code: string;
+  requestId?: string;
+  retryable: boolean;
+  status: number;
+  suggestedRadiusKm?: number;
+  retryAfterSeconds?: number;
+
+  constructor(params: {
+    code: string;
+    message: string;
+    status: number;
+    requestId?: string;
+    retryable?: boolean;
+    suggestedRadiusKm?: number;
+    retryAfterSeconds?: number;
+  }) {
+    super(params.message);
+    this.name = 'ApiClientError';
+    this.code = params.code;
+    this.status = params.status;
+    this.requestId = params.requestId;
+    this.retryable = Boolean(params.retryable);
+    this.suggestedRadiusKm = params.suggestedRadiusKm;
+    this.retryAfterSeconds = params.retryAfterSeconds;
+  }
+
+  toStructured(): StructuredApiError {
+    return {
+      code: this.code,
+      message: this.message,
+      requestId: this.requestId,
+      retryable: this.retryable,
+      suggestedRadiusKm: this.suggestedRadiusKm,
+      retryAfterSeconds: this.retryAfterSeconds,
+    };
+  }
+}
+
+async function parseApiError(res: Response, fallbackMessage: string): Promise<ApiClientError> {
+  const payload = (await res.json().catch(() => ({}))) as Partial<StructuredApiError> & {
+    error?: string;
+  };
+
+  if (res.status === 429) {
+    const waitSec = payload.retryAfterSeconds || 30;
+    return new ApiClientError({
+      code: payload.code || 'RATE_LIMITED',
+      message:
+        payload.message ||
+        `Has realizado demasiadas consultas seguidas. Espera ${waitSec} segundos antes de intentarlo de nuevo.`,
+      status: 429,
+      requestId: payload.requestId,
+      retryable: true,
+      retryAfterSeconds: waitSec,
+    });
+  }
+
+  const code =
+    payload.code ||
+    (res.status === 404
+      ? 'NOT_FOUND'
+      : res.status === 503
+      ? 'MAPS_UNAVAILABLE'
+      : res.status >= 500
+      ? 'INTERNAL_ERROR'
+      : 'INVALID_REQUEST');
+
+  return new ApiClientError({
+    code,
+    message: payload.message || payload.error || fallbackMessage,
+    status: res.status,
+    requestId: payload.requestId,
+    retryable: payload.retryable ?? res.status >= 500,
+    suggestedRadiusKm: payload.suggestedRadiusKm,
+    retryAfterSeconds: payload.retryAfterSeconds,
+  });
+}
 
 export async function geocodeAddressProxy(query: string): Promise<UserLocation | null> {
   try {
@@ -20,14 +100,18 @@ export async function geocodeAddressProxy(query: string): Promise<UserLocation |
       body: JSON.stringify({ query }),
     });
     if (!res.ok) {
-      const errData = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(errData.error || 'No se pudo geolocalizar la dirección');
+      throw await parseApiError(res, 'No pudimos encontrar esa ubicación. Revisa el nombre e inténtalo de nuevo.');
     }
     const data = (await res.json()) as { location?: UserLocation };
     return data.location || null;
   } catch (error) {
-    console.error('Error en geocodeAddressProxy:', error);
-    throw error;
+    if (error instanceof ApiClientError) throw error;
+    throw new ApiClientError({
+      code: 'MAPS_UNAVAILABLE',
+      message: 'No pudimos conectar con el servicio de búsqueda de ubicaciones.',
+      status: 503,
+      retryable: true,
+    });
   }
 }
 
@@ -47,20 +131,7 @@ export async function reverseGeocodeProxy(lat: number, lng: number): Promise<{
       return await res.json();
     }
   } catch (err) {
-    console.warn('Reverse geocode primary attempt notice, trying fallback /api/places/reverse-geocode:', err);
-  }
-
-  try {
-    const fallbackRes = await fetch(`${BASE_API_URL}/api/places/reverse-geocode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat, lng }),
-    });
-    if (fallbackRes.ok) {
-      return await fallbackRes.json();
-    }
-  } catch (err2) {
-    console.warn('Fallback reverse geocode error:', err2);
+    console.warn('Reverse geocode notice:', err);
   }
 
   return {
@@ -77,8 +148,7 @@ export async function analyzeMoodProxy(text: string): Promise<Mood> {
     body: JSON.stringify({ text }),
   });
   if (!res.ok) {
-    const errData = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errData.error || 'Error al analizar el estado de ánimo');
+    throw await parseApiError(res, 'No pudimos interpretar tu estado de ánimo en este momento.');
   }
   const data = (await res.json()) as { mood: Mood };
   return data.mood;
@@ -99,8 +169,13 @@ export async function generateItineraryProxy(payload: {
 }): Promise<GeneratedItinerary> {
   const lat = payload.latitude ?? payload.criteria.location?.lat;
   const lng = payload.longitude ?? payload.criteria.location?.lng;
-  const radius = payload.searchRadiusKm ?? payload.criteria.searchRadiusKm ?? 5;
-  const isGpsActive = Boolean(payload.criteria.isGpsActive || payload.criteria.location?.isGps || payload.gpsLocation);
+  const radius =
+    payload.searchRadiusKm ??
+    payload.criteria.searchRadiusKm ??
+    (payload.criteria.environment === 'Escapada' ? 15 : 5);
+  const isGpsActive = Boolean(
+    payload.criteria.isGpsActive || payload.criteria.location?.isGps || payload.gpsLocation
+  );
 
   const fullPayload = {
     ...payload,
@@ -112,66 +187,62 @@ export async function generateItineraryProxy(payload: {
     userTasteProfile: payload.criteria.userTasteProfile,
   };
 
+  let res: Response;
   try {
-    const res = await fetch(`${BASE_API_URL}/api/gemini/generate-itinerary`, {
+    res = await fetch(`${BASE_API_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(fullPayload),
     });
-    if (res.ok) {
-      return (await res.json()) as GeneratedItinerary;
-    }
-  } catch (err) {
-    console.warn('Initial generate itinerary endpoint attempt notice, trying /api/generate fallback:', err);
-  }
-
-  // Fallback to /api/generate
-  try {
-    const fallbackRes = await fetch(`${BASE_API_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fullPayload),
+  } catch {
+    throw new ApiClientError({
+      code: 'NETWORK_ERROR',
+      message: 'No pudimos conectar con el servidor para crear tu plan. Comprueba tu conexión e inténtalo de nuevo.',
+      status: 0,
+      retryable: true,
     });
-    if (fallbackRes.ok) {
-      return (await fallbackRes.json()) as GeneratedItinerary;
-    }
-  } catch (err2) {
-    console.warn('Fallback /api/generate route error:', err2);
   }
 
-  throw new Error('No se pudo generar el itinerario en este momento. Por favor, inténtalo de nuevo.');
+  if (!res.ok) {
+    throw await parseApiError(
+      res,
+      'No se pudo generar el itinerario en este momento. Por favor, inténtalo de nuevo.'
+    );
+  }
+
+  return (await res.json()) as GeneratedItinerary;
 }
 
-export async function searchPlacesProxy(query: string, location: UserLocation): Promise<Plan[]> {
+export async function searchPlacesProxy(
+  query: string,
+  location: UserLocation,
+  searchRadiusKm = 5
+): Promise<Plan[]> {
+  let res: Response;
   try {
-    const res = await fetch(`${BASE_API_URL}/api/places/search`, {
+    res = await fetch(`${BASE_API_URL}/api/places/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, location }),
+      body: JSON.stringify({ query, location, searchRadiusKm }),
     });
-    if (res.ok) {
-      const data = (await res.json()) as { places?: Plan[] };
-      if (Array.isArray(data.places)) return data.places;
-    }
-  } catch (err) {
-    console.warn('Places search primary route notice, trying /api/places:', err);
+  } catch {
+    throw new ApiClientError({
+      code: 'MAPS_UNAVAILABLE',
+      message: 'No pudimos conectar con el servicio de mapas y lugares reales.',
+      status: 503,
+      retryable: true,
+    });
   }
 
-  try {
-    const fallbackRes = await fetch(`${BASE_API_URL}/api/places`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, location }),
-    });
-    if (fallbackRes.ok) {
-      const data = (await fallbackRes.json()) as { places?: Plan[] };
-      return data.places || [];
-    }
-  } catch (err2) {
-    console.warn('Fallback /api/places route notice:', err2);
+  if (!res.ok) {
+    throw await parseApiError(
+      res,
+      'No se pudieron consultar lugares verificados en esta zona.'
+    );
   }
 
-  return [];
+  const data = (await res.json()) as { places?: Plan[] };
+  return Array.isArray(data.places) ? data.places : [];
 }
 
 export async function getWeatherProxy(location: UserLocation): Promise<WeatherInfo> {
@@ -188,7 +259,6 @@ export async function getWeatherProxy(location: UserLocation): Promise<WeatherIn
     console.warn('Weather fetch encountered network error, falling back gracefully:', error);
   }
 
-  // Graceful degradation: weather unavailable
   return {
     temp: null,
     condition: 'No disponible',
@@ -205,14 +275,23 @@ export async function computeRouteProxy(
   destination: UserLocation,
   travelMode: string
 ): Promise<RouteInfo> {
-  const res = await fetch(`${BASE_API_URL}/api/routes/compute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ origin, destination, travelMode }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_API_URL}/api/routes/compute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ origin, destination, travelMode }),
+    });
+  } catch {
+    throw new ApiClientError({
+      code: 'MAPS_UNAVAILABLE',
+      message: 'No pudimos calcular la ruta entre paradas.',
+      status: 503,
+      retryable: true,
+    });
+  }
   if (!res.ok) {
-    const errData = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errData.error || 'Error al calcular la ruta');
+    throw await parseApiError(res, 'Error al calcular la ruta entre paradas.');
   }
   return (await res.json()) as RouteInfo;
 }
@@ -223,6 +302,7 @@ export async function generateGroupDeckProxy(params: {
   mood?: string;
   environment?: string;
   budget?: string;
+  searchRadiusKm?: number;
   onlyOpenNow?: boolean;
   visitedPlaces?: Array<{ id: string; name: string }>;
   userTasteProfile?: {
@@ -232,19 +312,32 @@ export async function generateGroupDeckProxy(params: {
     averageEnergy: number;
   };
 }): Promise<{ deck: SwipeCardItem[]; cityName: string }> {
-  const res = await fetch(`${BASE_API_URL}/api/group/deck`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...params,
-      latitude: params.location.lat,
-      longitude: params.location.lng,
-      cityName: params.cityName || params.location.cityName,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_API_URL}/api/group/deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...params,
+        latitude: params.location.lat,
+        longitude: params.location.lng,
+        searchRadiusKm: params.searchRadiusKm ?? (params.environment === 'Escapada' ? 15 : 5),
+        cityName: params.cityName || params.location.cityName,
+      }),
+    });
+  } catch {
+    throw new ApiClientError({
+      code: 'NETWORK_ERROR',
+      message: 'No pudimos conectar con el servidor para cargar los planes de grupo.',
+      status: 0,
+      retryable: true,
+    });
+  }
   if (!res.ok) {
-    const errData = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errData.error || 'No se pudo generar el mazo de 5 planes para votar');
+    throw await parseApiError(
+      res,
+      'No se pudo preparar el mazo de planes reales para votar en grupo.'
+    );
   }
   return (await res.json()) as { deck: SwipeCardItem[]; cityName: string };
 }
@@ -277,4 +370,3 @@ export async function getGroupSessionProxy(sessionId: string): Promise<GroupSwip
   }
   return null;
 }
-

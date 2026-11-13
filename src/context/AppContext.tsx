@@ -18,9 +18,10 @@ import {
   type UserTasteProfile,
   type SwipeCardItem,
   type GroupSwipeSession,
+  type StructuredApiError,
 } from '../types';
 import { generateItinerary } from '../services/geminiService';
-import { generateGroupDeckProxy, getGroupSessionProxy } from '../services/apiProxy';
+import { generateGroupDeckProxy, getGroupSessionProxy, ApiClientError } from '../services/apiProxy';
 import { decodeGroupSessionPayload } from '../utils/groupSessionCodec';
 import { findPotentialPlaces } from '../services/googleMapsService';
 import { getEventBasedSearchQueries } from '../services/eventsService';
@@ -57,6 +58,7 @@ export interface AppState {
   isLoading: boolean;
   loadingMessage: string;
   error: string | null;
+  errorDetails?: StructuredApiError | null;
   userLocation: UserLocation | null;
   formState: FormState;
 }
@@ -84,14 +86,17 @@ export interface AppContextType extends AppState {
   setUserLocation: (location: UserLocation | null) => void;
   setFormState: (newState: Partial<FormState>) => void;
   handleGenerateItinerary: (criteria: SearchCriteria) => Promise<void>;
+  handleExpandSearchRadius: (newRadiusKm?: number) => Promise<void>;
+  handleRetryLastSearch: () => Promise<void>;
   handleSurpriseMe: (locationOverride?: UserLocation) => Promise<void>;
   handleBackToHome: () => void;
   groupDeck: SwipeCardItem[];
   groupDeckCity: string;
   groupLoading: boolean;
   groupError: string | null;
+  groupErrorDetails: StructuredApiError | null;
   incomingGroupSession: GroupSwipeSession | null;
-  handleStartGroupMode: (locationOverride?: UserLocation) => Promise<void>;
+  handleStartGroupMode: (locationOverride?: UserLocation, radiusOverride?: number) => Promise<void>;
   handleExitGroupMode: () => void;
 }
 
@@ -110,7 +115,9 @@ const initialFormState: FormState = {
   onlyOpenNow: false,
 };
 
-// Helper strictly guaranteeing verified coordinates and addresses from Google Places
+const SYNTHETIC_ID_REGEX = /^(poi-|resilient-poi-|gemini-poi-|group-card-)/i;
+
+// Helper strictly guaranteeing verified coordinates and addresses from Google Places / OpenStreetMap
 const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, places: Plan[]): T => {
   if (!planDetails || !planDetails.schedule) return planDetails;
 
@@ -127,11 +134,12 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
         placesById[item.placeName.toLowerCase().trim()];
 
       if (!matchedPlace) {
-        // If the item already has valid location coordinates from the server, preserve it!
-        if (item.location && typeof item.location.lat === 'number' && typeof item.location.lng === 'number') {
-          return item;
-        }
-        return null;
+        const isBackendVerified =
+          Boolean(item.placeId) &&
+          !SYNTHETIC_ID_REGEX.test(item.placeId) &&
+          (item.verifiedSource === 'google_places' || item.verifiedSource === 'openstreetmap') &&
+          Boolean(item.location && typeof item.location.lat === 'number' && typeof item.location.lng === 'number');
+        return isBackendVerified ? item : null;
       }
 
       return {
@@ -140,12 +148,13 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
         placeName: matchedPlace.name || item.placeName,
         placeAddress: matchedPlace.address || item.placeAddress,
         location: matchedPlace.location || item.location,
-        rating: matchedPlace.rating ?? item.rating,
-        userRatingsTotal: matchedPlace.userRatingsTotal ?? item.userRatingsTotal,
-        priceLevel: matchedPlace.priceLevel ?? item.priceLevel,
-        isOpenNow: matchedPlace.isOpenNow ?? item.isOpenNow,
-        photoUrl: matchedPlace.photoUrl || item.photoUrl,
-        isLocalSuggestion: matchedPlace.isLocalSuggestion ?? item.isLocalSuggestion,
+        rating: item.rating ?? matchedPlace.rating,
+        userRatingsTotal: item.userRatingsTotal ?? matchedPlace.userRatingsTotal,
+        priceLevel: item.priceLevel ?? matchedPlace.priceLevel,
+        isOpenNow: item.isOpenNow ?? matchedPlace.isOpenNow,
+        photoUrl: item.photoUrl || matchedPlace.photoUrl,
+        isLocalSuggestion: item.isLocalSuggestion ?? matchedPlace.isLocalSuggestion,
+        verifiedSource: item.verifiedSource || matchedPlace.verifiedSource,
         phoneNumber: matchedPlace.phoneNumber || item.phoneNumber,
         websiteUri: matchedPlace.websiteUri || item.websiteUri,
         allowsDogs: matchedPlace.allowsDogs ?? item.allowsDogs,
@@ -153,11 +162,6 @@ const enrichScheduleWithLocations = <T extends PlanDetails>(planDetails: T, plac
       };
     })
     .filter((item): item is ScheduleItem => item !== null);
-
-  // If filtering resulted in empty schedule but original had items with locations, fallback to original
-  if (enrichedSchedule.length === 0 && planDetails.schedule.length > 0) {
-    return planDetails;
-  }
 
   return { ...planDetails, schedule: enrichedSchedule };
 };
@@ -310,6 +314,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [groupDeckCity, setGroupDeckCity] = useState<string>('');
   const [groupLoading, setGroupLoading] = useState<boolean>(false);
   const [groupError, setGroupError] = useState<string | null>(null);
+  const [groupErrorDetails, setGroupErrorDetails] = useState<StructuredApiError | null>(null);
   const [incomingGroupSession, setIncomingGroupSession] = useState<GroupSwipeSession | null>(null);
 
   const [state, setState] = useState<AppState>(() => {
@@ -322,6 +327,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       isLoading: false,
       loadingMessage: '',
       error: null,
+      errorDetails: null,
       userLocation: cachedLoc,
       formState: initialFormState,
     };
@@ -827,6 +833,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         page: 'itinerary',
         isLoading: true,
         error: null,
+        errorDetails: null,
         itinerary: null,
         weather: null,
         loadingMessage: criteria.isSurpriseMe
@@ -855,39 +862,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setState((prevState) => ({
           ...prevState,
           weather,
-          loadingMessage: 'Buscando lugares reales verificados',
+          loadingMessage: `Buscando lugares reales verificados (radio ${searchRadiusKm} km)`,
         }));
 
-        // Step 2: Query verified places from Google Places (or real POIs)
-        let places: Plan[] = [];
-        try {
-          const eventQueries = getEventBasedSearchQueries(enrichedCriteria, weather);
-          places = await findPotentialPlaces(enrichedCriteria, eventQueries);
-        } catch (placeError) {
-          console.error('Error al consultar lugares reales:', placeError);
-        }
+        // Step 2: Query verified places from Google Places / OpenStreetMap
+        const eventQueries = getEventBasedSearchQueries(enrichedCriteria, weather);
+        const places = await findPotentialPlaces(enrichedCriteria, eventQueries);
 
-        // Step 3: Ensure places array is initialized for server-side synthesis
-        if (!places) {
-          places = [];
-        }
-
-        // Step 4: Generate narrative itinerary with Gemini using ONLY verified places
+        // Step 3: Generate narrative itinerary with Gemini using ONLY verified places
         setState((prevState) => ({
           ...prevState,
           loadingMessage: enrichedCriteria.isSurpriseMe
             ? 'Creando propuesta única adaptada a tu momento'
-            : 'Creando tu plan personalizado con IA',
+            : 'Personalizando tu experiencia con lugares verificados',
         }));
         const baseItinerary = await generateItinerary({ criteria: enrichedCriteria, weather, places });
 
-        // Step 5: Lock location data strictly to verified places
+        // Step 4: Lock location data strictly to verified places
         const itineraryWithLocations = { ...baseItinerary };
         if (baseItinerary.proposals && Array.isArray(baseItinerary.proposals)) {
-          itineraryWithLocations.proposals = baseItinerary.proposals.map((prop) => ({
-            ...prop,
-            schedule: enrichScheduleWithLocations(prop, places).schedule,
-          }));
+          itineraryWithLocations.proposals = baseItinerary.proposals
+            .map((prop) => ({
+              ...prop,
+              schedule: enrichScheduleWithLocations(prop, places).schedule,
+            }))
+            .filter((prop) => prop.schedule.length > 0);
         }
         itineraryWithLocations.mainPlan = enrichScheduleWithLocations(
           baseItinerary.mainPlan,
@@ -900,7 +899,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           );
         }
 
-        // Step 6: Enrich with routing information
+        if (!itineraryWithLocations.mainPlan.schedule.length) {
+          throw new ApiClientError({
+            code: searchRadiusKm < 15 ? 'NO_VERIFIED_PLACES_IN_RADIUS' : 'NO_VERIFIED_PLACES',
+            message:
+              searchRadiusKm < 15
+                ? `No encontramos suficientes lugares verificados en un radio de ${searchRadiusKm} km. Prueba ampliar el radio a 15 km.`
+                : 'No encontramos lugares reales verificados suficientes en esta zona.',
+            status: 404,
+            retryable: false,
+            suggestedRadiusKm: searchRadiusKm < 15 ? 15 : undefined,
+          });
+        }
+
+        // Step 5: Enrich with routing information
         setState((prevState) => ({
           ...prevState,
           loadingMessage: 'Diseñando la ruta perfecta',
@@ -916,17 +928,46 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setState((prevState) => ({ ...prevState, itinerary: finalItinerary }));
       } catch (err) {
         console.error(err);
-        const errorMessage =
-          err instanceof Error
-            ? err.message
-            : 'No se pudo generar el itinerario. Por favor, inténtalo de nuevo.';
-        setState((prevState) => ({ ...prevState, error: errorMessage }));
+        if (err instanceof ApiClientError) {
+          setState((prevState) => ({
+            ...prevState,
+            error: err.message,
+            errorDetails: err.toStructured(),
+          }));
+        } else {
+          setState((prevState) => ({
+            ...prevState,
+            error: 'No pudimos completar tu itinerario en este momento. Inténtalo de nuevo en unos instantes.',
+            errorDetails: {
+              code: 'INTERNAL_ERROR',
+              message: 'No pudimos completar tu itinerario en este momento. Inténtalo de nuevo en unos instantes.',
+              retryable: true,
+            },
+          }));
+        }
       } finally {
         setState((prevState) => ({ ...prevState, isLoading: false, loadingMessage: '' }));
       }
     },
     [state.userLocation, state.formState.experienceMode, state.formState.onlyOpenNow, userAffinities, visitedPlaces, userTasteProfile, recordAffinities]
   );
+
+  const handleExpandSearchRadius = useCallback(
+    async (newRadiusKm = 15) => {
+      if (!state.searchCriteria) return;
+      await handleGenerateItinerary({
+        ...state.searchCriteria,
+        searchRadiusKm: newRadiusKm,
+        allowSurroundings: true,
+      });
+    },
+    [state.searchCriteria, handleGenerateItinerary]
+  );
+
+  const handleRetryLastSearch = useCallback(async () => {
+    if (!state.searchCriteria) return;
+    await handleGenerateItinerary(state.searchCriteria);
+  }, [state.searchCriteria, handleGenerateItinerary]);
 
   // Botón directo "Sorpréndeme Ahora" (1-Tap)
   const handleSurpriseMe = useCallback(
@@ -985,15 +1026,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   );
 
   const handleStartGroupMode = useCallback(
-    async (locationOverride?: UserLocation) => {
+    async (locationOverride?: UserLocation, radiusOverride?: number) => {
       const targetLocation = locationOverride || state.userLocation;
       if (!targetLocation) {
-        setGroupError('Selecciona primero una ubicación para crear el mazo de 5 planes.');
+        const msg = 'Selecciona primero una ubicación para crear el mazo de 5 planes.';
+        setGroupError(msg);
+        setGroupErrorDetails({ code: 'INVALID_REQUEST', message: msg, retryable: false });
         return;
       }
 
+      const radiusKm =
+        radiusOverride || (state.formState.entorno?.label === 'Escapada' ? 15 : 5);
+
       setIncomingGroupSession(null);
       setGroupError(null);
+      setGroupErrorDetails(null);
       setGroupLoading(true);
       setGroupDeck([]);
       setGroupDeckCity(targetLocation.cityName || 'tu ciudad');
@@ -1001,6 +1048,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...prev,
         page: 'group',
         error: null,
+        errorDetails: null,
       }));
 
       try {
@@ -1010,6 +1058,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           mood: state.formState.mood?.label,
           environment: state.formState.entorno?.label,
           budget: state.formState.budget ? `${state.formState.budget.symbol} ${state.formState.budget.label}` : undefined,
+          searchRadiusKm: radiusKm,
           onlyOpenNow: state.formState.onlyOpenNow,
           visitedPlaces: visitedPlaces.map((vp) => ({ id: vp.id, name: vp.name })),
           userTasteProfile: {
@@ -1023,11 +1072,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setGroupDeckCity(result.cityName || targetLocation.cityName || 'tu ciudad');
       } catch (err) {
         console.error('Error starting Group Mode:', err);
-        setGroupError(
-          err instanceof Error
-            ? err.message
-            : 'No se pudo cargar el mazo de 5 propuestas para decidir juntos.'
-        );
+        if (err instanceof ApiClientError) {
+          setGroupError(err.message);
+          setGroupErrorDetails(err.toStructured());
+        } else {
+          const msg = 'No se pudo cargar el mazo de propuestas reales para decidir juntos.';
+          setGroupError(msg);
+          setGroupErrorDetails({ code: 'INTERNAL_ERROR', message: msg, retryable: true });
+        }
       } finally {
         setGroupLoading(false);
       }
@@ -1087,12 +1139,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setUserLocation,
     setFormState,
     handleGenerateItinerary,
+    handleExpandSearchRadius,
+    handleRetryLastSearch,
     handleSurpriseMe,
     handleBackToHome,
     groupDeck,
     groupDeckCity,
     groupLoading,
     groupError,
+    groupErrorDetails,
     incomingGroupSession,
     handleStartGroupMode,
     handleExitGroupMode,

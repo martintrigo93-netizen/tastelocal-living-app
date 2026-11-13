@@ -54,7 +54,10 @@ const ItineraryPage: React.FC = () => {
     isLoading,
     loadingMessage,
     error,
+    errorDetails,
     handleBackToHome,
+    handleExpandSearchRadius,
+    handleRetryLastSearch,
     savedPlans,
     isSavedPlansModalOpen,
     setIsSavedPlansModalOpen,
@@ -72,21 +75,67 @@ const ItineraryPage: React.FC = () => {
   }
 
   if (error) {
+    const code = errorDetails?.code || '';
+    const isNoPlacesInRadius = code === 'NO_VERIFIED_PLACES_IN_RADIUS';
+    const isNoPlaces = code === 'NO_VERIFIED_PLACES' || isNoPlacesInRadius;
+    const isRateLimit = code === 'RATE_LIMITED';
+    const isMapsError = code === 'MAPS_UNAVAILABLE' || code === 'NETWORK_ERROR';
+
+    const heading = isNoPlacesInRadius
+      ? 'Pocos lugares verificados en este radio'
+      : isNoPlaces
+      ? 'Sin lugares verificados en la zona'
+      : isRateLimit
+      ? 'Demasiadas consultas en poco tiempo'
+      : isMapsError
+      ? 'Mapas y lugares temporalmente no disponibles'
+      : 'No pudimos completar tu plan';
+
+    const iconEmoji = isNoPlaces ? '📍' : isRateLimit ? '⏳' : isMapsError ? '🗺️' : '⚠️';
+
     return (
       <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-[#0F1015] text-white animate-fade-in">
-        <div className="w-16 h-16 rounded-2xl bg-red-950/60 border border-red-500/40 text-red-400 flex items-center justify-center text-3xl mb-4 shadow-lg">
-          <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
+        <div className="w-16 h-16 rounded-2xl bg-[#FF5E2B]/15 border border-[#FF5E2B]/40 text-[#FF5E2B] flex items-center justify-center text-3xl mb-4 shadow-lg">
+          <span>{iconEmoji}</span>
         </div>
-        <h3 className="font-extrabold text-lg text-white">Sin resultados suficientes</h3>
-        <p className="text-gray-400 mt-2 text-xs md:text-sm max-w-sm leading-relaxed">{error}</p>
-        <button
-          onClick={handleBackToHome}
-          className="mt-6 py-3 px-6 bg-[#FF5E2B] hover:bg-[#E84D1C] text-white text-xs font-bold rounded-xl shadow-lg transition transform hover:scale-105 active:scale-95 cursor-pointer"
-        >
-          Modificar preferencias
-        </button>
+        <h3 className="font-extrabold text-lg text-white">{heading}</h3>
+        <p className="text-gray-300 mt-2 text-xs md:text-sm max-w-md leading-relaxed">{error}</p>
+        {errorDetails?.requestId && (
+          <p className="text-[10px] font-mono text-gray-500 mt-2">
+            Ref: {errorDetails.requestId}
+          </p>
+        )}
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          {isNoPlacesInRadius && searchCriteria && (
+            <button
+              type="button"
+              onClick={() => handleExpandSearchRadius(errorDetails?.suggestedRadiusKm || 15)}
+              className="py-3 px-6 bg-[#FF5E2B] hover:bg-[#E84D1C] text-white text-xs font-bold rounded-xl shadow-lg transition transform hover:scale-105 active:scale-95 cursor-pointer"
+            >
+              Ampliar búsqueda a {errorDetails?.suggestedRadiusKm || 15} km
+            </button>
+          )}
+          {errorDetails?.retryable && searchCriteria && (
+            <button
+              type="button"
+              onClick={handleRetryLastSearch}
+              className="py-3 px-6 bg-[#FF5E2B] hover:bg-[#E84D1C] text-white text-xs font-bold rounded-xl shadow-lg transition transform hover:scale-105 active:scale-95 cursor-pointer"
+            >
+              Reintentar ahora
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleBackToHome}
+            className={`py-3 px-6 text-xs font-bold rounded-xl transition cursor-pointer ${
+              isNoPlacesInRadius || (errorDetails?.retryable && searchCriteria)
+                ? 'bg-white/10 hover:bg-white/15 text-white border border-white/15'
+                : 'bg-[#FF5E2B] hover:bg-[#E84D1C] text-white shadow-lg'
+            }`}
+          >
+            Modificar preferencias
+          </button>
+        </div>
       </div>
     );
   }
@@ -342,6 +391,12 @@ const ItineraryPage: React.FC = () => {
             />
           ) : (
             <div className="h-full overflow-y-auto px-4 sm:px-6 md:px-8 py-5 space-y-6 scrollbar-hide">
+              {itinerary.aiFallbackNotice && (
+                <div className="p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 text-xs text-gray-200 flex items-start gap-2.5">
+                  <span className="text-base leading-none mt-0.5">📍</span>
+                  <p className="leading-relaxed">{itinerary.aiFallbackNotice}</p>
+                </div>
+              )}
               {/* MÓDULO DISCOVER: ResultsPage component */}
               <ResultsPage
                 proposals={proposals}

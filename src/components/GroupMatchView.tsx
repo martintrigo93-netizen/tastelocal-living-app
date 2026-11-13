@@ -62,6 +62,7 @@ const GroupMatchView: React.FC = () => {
     groupDeckCity,
     groupLoading,
     groupError,
+    groupErrorDetails,
     incomingGroupSession,
     userLocation,
     handleStartGroupMode,
@@ -353,18 +354,30 @@ const GroupMatchView: React.FC = () => {
   }
 
   if (groupError || groupDeck.length === 0) {
+    const isRadiusInsufficient = groupErrorDetails?.code === 'NO_VERIFIED_PLACES_IN_RADIUS';
     return (
       <div className="flex flex-col h-full bg-[#0F1015] text-white overflow-hidden">
         {renderHeader()}
         <main className="flex-grow flex flex-col items-center justify-center p-6 text-center space-y-4 max-w-md mx-auto">
           <div className="w-14 h-14 rounded-2xl bg-[#FF5E2B]/15 border border-[#FF5E2B]/30 flex items-center justify-center text-2xl">
-            🫂
+            {isRadiusInsufficient ? '📍' : groupErrorDetails?.code === 'RATE_LIMITED' ? '⏳' : '🫂'}
           </div>
-          <h2 className="text-lg font-black text-white">No pudimos cargar el mazo</h2>
-          <p className="text-xs text-gray-400 leading-relaxed">
-            {groupError || 'Necesitamos una ubicación activa para generar 5 planes cercanos.'}
+          <h2 className="text-lg font-black text-white">
+            {isRadiusInsufficient
+              ? 'Pocos lugares verificados cerca'
+              : groupErrorDetails?.code === 'RATE_LIMITED'
+              ? 'Límite temporal de consultas'
+              : 'No pudimos cargar el mazo'}
+          </h2>
+          <p className="text-xs text-gray-300 leading-relaxed">
+            {groupError || 'Necesitamos una ubicación activa para generar planes reales cercanos.'}
           </p>
-          <div className="flex gap-3 pt-2">
+          {groupErrorDetails?.requestId && (
+            <p className="text-[10px] font-mono text-gray-500">
+              Ref: {groupErrorDetails.requestId}
+            </p>
+          )}
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
             <button
               type="button"
               onClick={handleExitGroupMode}
@@ -372,7 +385,16 @@ const GroupMatchView: React.FC = () => {
             >
               Volver al inicio
             </button>
-            {userLocation && (
+            {userLocation && isRadiusInsufficient && (
+              <button
+                type="button"
+                onClick={() => handleStartGroupMode(userLocation, 15)}
+                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#FF5E2B] hover:bg-[#E84D1C] text-white text-xs font-bold cursor-pointer"
+              >
+                Ampliar radio a 15 km
+              </button>
+            )}
+            {userLocation && !isRadiusInsufficient && groupErrorDetails?.retryable !== false && (
               <button
                 type="button"
                 onClick={() => handleStartGroupMode(userLocation)}
