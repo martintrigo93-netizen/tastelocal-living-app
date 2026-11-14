@@ -1,4 +1,4 @@
-import { GeneratedItinerary, WeatherInfo } from '../types';
+import { GeneratedItinerary, ProposalPlan, ScheduleItem, WeatherInfo } from '../types';
 import { computeRouteProxy, ApiClientError } from './apiProxy';
 
 function computeLocalFallbackRoute(
@@ -22,52 +22,37 @@ function computeLocalFallbackRoute(
   };
 }
 
-export async function enrichItineraryWithRoutes(
-  itinerary: GeneratedItinerary,
+function getWeatherAlertSummary(weather?: WeatherInfo | null): string | undefined {
+  return weather && weather.isAvailable && weather.alertLevel !== 'clear' && weather.alertLevel !== 'unavailable'
+    ? `Condición: ${weather.summary}`
+    : undefined;
+}
+
+async function enrichScheduleStops(
+  schedule: ScheduleItem[],
   travelMode: 'WALKING' | 'TRANSIT' | 'DRIVING' | 'BICYCLING',
-  weather?: WeatherInfo | null
-): Promise<GeneratedItinerary> {
-  const enrichedItinerary: GeneratedItinerary = {
-    ...itinerary,
-    mainPlan: {
-      ...itinerary.mainPlan,
-      schedule: [...itinerary.mainPlan.schedule],
-    },
-  };
+  weatherAlert: string | undefined,
+  legCache: Map<string, Promise<NonNullable<ScheduleItem['routeInfo']>>>
+): Promise<ScheduleItem[]> {
+  const cloned = schedule.map((s) => ({ ...s }));
+  let abortRemoteRoutes = false;
 
-  let rateLimited = false;
-  const weatherAlert =
-    weather && weather.isAvailable && weather.alertLevel !== 'clear' && weather.alertLevel !== 'unavailable'
-      ? `Condición: ${weather.summary}`
-      : undefined;
+  const resolveLeg = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const key = `${lat1.toFixed(5)},${lng1.toFixed(5)}->${lat2.toFixed(5)},${lng2.toFixed(5)}|${travelMode}|${weatherAlert ? 'w' : 'n'}`;
+    const existing = legCache.get(key);
+    if (existing) return existing;
 
-  const schedule = enrichedItinerary.mainPlan.schedule;
-
-  for (let i = 1; i < schedule.length; i++) {
-    const prevStop = schedule[i - 1];
-    const currentStop = schedule[i];
-
-    if (prevStop.location && currentStop.location) {
-      if (rateLimited) {
-        currentStop.routeInfo = computeLocalFallbackRoute(
-          prevStop.location.lat,
-          prevStop.location.lng,
-          currentStop.location.lat,
-          currentStop.location.lng,
-          travelMode,
-          weatherAlert
-        );
-        continue;
+    const promise = (async () => {
+      if (abortRemoteRoutes) {
+        return computeLocalFallbackRoute(lat1, lng1, lat2, lng2, travelMode, weatherAlert);
       }
-
       try {
         const routeData = await computeRouteProxy(
-          prevStop.location,
-          currentStop.location,
+          { lat: lat1, lng: lng1 },
+          { lat: lat2, lng: lng2 },
           travelMode
         );
-
-        currentStop.routeInfo = {
+        return {
           duration: routeData.duration || '15 min aprox.',
           distance: routeData.distance || '1.2 km',
           travelMode,
@@ -76,119 +61,131 @@ export async function enrichItineraryWithRoutes(
           suggestedPois: routeData.suggestedPois || [],
         };
       } catch (err) {
-        if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
-          rateLimited = true;
+        if (err instanceof ApiClientError && (err.code === 'RATE_LIMITED' || !err.retryable)) {
+          abortRemoteRoutes = true;
         }
-        console.warn(`Could not compute route between stop ${i - 1} and ${i}:`, err);
-        currentStop.routeInfo = computeLocalFallbackRoute(
+        console.warn('Could not compute route between stops:', err);
+        return computeLocalFallbackRoute(lat1, lng1, lat2, lng2, travelMode, weatherAlert);
+      }
+    })();
+
+    legCache.set(key, promise);
+    return promise;
+  };
+
+  const tasks: Promise<void>[] = [];
+  for (let i = 1; i < cloned.length; i++) {
+    const prevStop = cloned[i - 1];
+    const currentStop = cloned[i];
+    if (prevStop.location && currentStop.location && !currentStop.routeInfo) {
+      tasks.push(
+        resolveLeg(
           prevStop.location.lat,
           prevStop.location.lng,
           currentStop.location.lat,
-          currentStop.location.lng,
+          currentStop.location.lng
+        ).then((info) => {
+          currentStop.routeInfo = info;
+        })
+      );
+    }
+  }
+
+  await Promise.all(tasks);
+  return cloned;
+}
+
+export async function enrichProposalWithRoutes(
+  proposal: ProposalPlan,
+  travelMode: 'WALKING' | 'TRANSIT' | 'DRIVING' | 'BICYCLING',
+  weather?: WeatherInfo | null,
+  includeWeatherAlert = false
+): Promise<ProposalPlan> {
+  const weatherAlert = includeWeatherAlert ? getWeatherAlertSummary(weather) : undefined;
+  const legCache = new Map<string, Promise<NonNullable<ScheduleItem['routeInfo']>>>();
+  const schedule = await enrichScheduleStops(proposal.schedule, travelMode, weatherAlert, legCache);
+  return {
+    ...proposal,
+    schedule,
+  };
+}
+
+export async function enrichItineraryWithRoutes(
+  itinerary: GeneratedItinerary,
+  travelMode: 'WALKING' | 'TRANSIT' | 'DRIVING' | 'BICYCLING',
+  weather?: WeatherInfo | null,
+  options?: { onlyPrimaryPlan?: boolean }
+): Promise<GeneratedItinerary> {
+  const onlyPrimaryPlan = Boolean(options?.onlyPrimaryPlan);
+  const weatherAlert = getWeatherAlertSummary(weather);
+  const legCache = new Map<string, Promise<NonNullable<ScheduleItem['routeInfo']>>>();
+
+  const enrichedItinerary: GeneratedItinerary = {
+    ...itinerary,
+    mainPlan: {
+      ...itinerary.mainPlan,
+      schedule: itinerary.mainPlan.schedule.map((s) => ({ ...s })),
+    },
+    ...(itinerary.premiumContingencyPlan
+      ? {
+          premiumContingencyPlan: {
+            ...itinerary.premiumContingencyPlan,
+            schedule: itinerary.premiumContingencyPlan.schedule.map((s) => ({ ...s })),
+          },
+        }
+      : {}),
+    ...(itinerary.proposals && Array.isArray(itinerary.proposals)
+      ? {
+          proposals: itinerary.proposals.map((prop) => ({
+            ...prop,
+            schedule: prop.schedule.map((s) => ({ ...s })),
+          })),
+        }
+      : {}),
+  };
+
+  const tasks: Promise<void>[] = [
+    enrichScheduleStops(enrichedItinerary.mainPlan.schedule, travelMode, weatherAlert, legCache).then(
+      (schedule) => {
+        enrichedItinerary.mainPlan.schedule = schedule;
+      }
+    ),
+  ];
+
+  if (enrichedItinerary.proposals && enrichedItinerary.proposals.length > 0) {
+    const proposalsToEnrich = onlyPrimaryPlan
+      ? [enrichedItinerary.proposals[0]]
+      : enrichedItinerary.proposals;
+
+    proposalsToEnrich.forEach((prop, index) => {
+      tasks.push(
+        enrichScheduleStops(
+          prop.schedule,
           travelMode,
-          weatherAlert
-        );
-      }
-    }
+          index === 0 ? weatherAlert : undefined,
+          legCache
+        ).then((schedule) => {
+          prop.schedule = schedule;
+        })
+      );
+    });
   }
 
-  // Also enrich contingency plan if available
-  if (enrichedItinerary.premiumContingencyPlan) {
-    enrichedItinerary.premiumContingencyPlan = {
-      ...enrichedItinerary.premiumContingencyPlan,
-      schedule: [...enrichedItinerary.premiumContingencyPlan.schedule],
-    };
-    const cSchedule = enrichedItinerary.premiumContingencyPlan.schedule;
-    for (let i = 1; i < cSchedule.length; i++) {
-      const prevStop = cSchedule[i - 1];
-      const currentStop = cSchedule[i];
-      if (prevStop.location && currentStop.location) {
-        if (rateLimited) {
-          currentStop.routeInfo = computeLocalFallbackRoute(
-            prevStop.location.lat,
-            prevStop.location.lng,
-            currentStop.location.lat,
-            currentStop.location.lng,
-            travelMode
-          );
-          continue;
+  if (!onlyPrimaryPlan && enrichedItinerary.premiumContingencyPlan) {
+    tasks.push(
+      enrichScheduleStops(
+        enrichedItinerary.premiumContingencyPlan.schedule,
+        travelMode,
+        undefined,
+        legCache
+      ).then((schedule) => {
+        if (enrichedItinerary.premiumContingencyPlan) {
+          enrichedItinerary.premiumContingencyPlan.schedule = schedule;
         }
-        try {
-          const routeData = await computeRouteProxy(
-            prevStop.location,
-            currentStop.location,
-            travelMode
-          );
-          currentStop.routeInfo = {
-            duration: routeData.duration || '15 min aprox.',
-            distance: routeData.distance || '1 km',
-            travelMode,
-            encodedPolyline: routeData.encodedPolyline,
-            suggestedPois: [],
-          };
-        } catch (err) {
-          if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
-            rateLimited = true;
-          }
-          currentStop.routeInfo = computeLocalFallbackRoute(
-            prevStop.location.lat,
-            prevStop.location.lng,
-            currentStop.location.lat,
-            currentStop.location.lng,
-            travelMode
-          );
-        }
-      }
-    }
+      })
+    );
   }
 
-  // Enrich all proposals routes
-  if (enrichedItinerary.proposals && Array.isArray(enrichedItinerary.proposals)) {
-    for (const prop of enrichedItinerary.proposals) {
-      const pSchedule = prop.schedule;
-      for (let i = 1; i < pSchedule.length; i++) {
-        const prevStop = pSchedule[i - 1];
-        const currentStop = pSchedule[i];
-        if (prevStop.location && currentStop.location) {
-          if (rateLimited) {
-            currentStop.routeInfo = computeLocalFallbackRoute(
-              prevStop.location.lat,
-              prevStop.location.lng,
-              currentStop.location.lat,
-              currentStop.location.lng,
-              travelMode
-            );
-            continue;
-          }
-          try {
-            const routeData = await computeRouteProxy(
-              prevStop.location,
-              currentStop.location,
-              travelMode
-            );
-            currentStop.routeInfo = {
-              duration: routeData.duration || '12 min aprox.',
-              distance: routeData.distance || '1 km',
-              travelMode,
-              encodedPolyline: routeData.encodedPolyline,
-              suggestedPois: [],
-            };
-          } catch (err) {
-            if (err instanceof ApiClientError && err.code === 'RATE_LIMITED') {
-              rateLimited = true;
-            }
-            currentStop.routeInfo = computeLocalFallbackRoute(
-              prevStop.location.lat,
-              prevStop.location.lng,
-              currentStop.location.lat,
-              currentStop.location.lng,
-              travelMode
-            );
-          }
-        }
-      }
-    }
-  }
-
+  await Promise.all(tasks);
   return enrichedItinerary;
 }

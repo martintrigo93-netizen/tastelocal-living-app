@@ -1,13 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { type ProposalPlan, type WeatherInfo, type ScheduleItem } from '../types';
-import MapComponent, { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
+import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from '../utils/mapLinks';
 import { useAppContext } from '../context/AppContext';
-import SavedPlansModal from './SavedPlansModal';
-import SharePlanModal from './SharePlanModal';
 import AudioNarrator from './AudioNarrator';
 import { getAmbienceTag } from './ItineraryPage';
 import QuickActionsBar from './QuickActionsBar';
 import ChainedTimeline from './ChainedTimeline';
+
+const MapComponent = lazy(() => import('./Map'));
+const SavedPlansModal = lazy(() => import('./SavedPlansModal'));
+const SharePlanModal = lazy(() => import('./SharePlanModal'));
 
 interface DetailPageProps {
   plan: ProposalPlan;
@@ -511,7 +513,15 @@ const DetailPage: React.FC<DetailPageProps> = ({
           {activeTab === 'map' && (
             <div className="space-y-4 animate-fade-in">
               <div className="w-full h-96 rounded-3xl overflow-hidden border border-white/10 shadow-2xl relative">
-                <MapComponent schedule={plan.schedule} showNavigationButton={false} />
+                <Suspense
+                  fallback={
+                    <div className="w-full h-full flex items-center justify-center bg-[#0F1015] text-xs text-gray-400">
+                      Cargando mapa...
+                    </div>
+                  }
+                >
+                  <MapComponent schedule={plan.schedule} showNavigationButton={false} />
+                </Suspense>
               </div>
 
               {/* Stop cards overview beneath map with Ambience/Pet Tags & Quick Actions */}
@@ -692,17 +702,25 @@ const DetailPage: React.FC<DetailPageProps> = ({
       </div>
 
       {/* Modals */}
-      <SavedPlansModal
-        isOpen={isSavedPlansModalOpen}
-        onClose={() => setIsSavedPlansModalOpen(false)}
-      />
+      {isSavedPlansModalOpen && (
+        <Suspense fallback={null}>
+          <SavedPlansModal
+            isOpen={isSavedPlansModalOpen}
+            onClose={() => setIsSavedPlansModalOpen(false)}
+          />
+        </Suspense>
+      )}
 
-      <SharePlanModal
-        plan={plan}
-        moodPhrase={plan.tagline}
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
-      />
+      {isShareModalOpen && (
+        <Suspense fallback={null}>
+          <SharePlanModal
+            plan={plan}
+            moodPhrase={plan.tagline}
+            isOpen={isShareModalOpen}
+            onClose={() => setIsShareModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

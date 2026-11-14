@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { type ProposalPlan, type ScheduleItem } from '../types';
-import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
+import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from '../utils/mapLinks';
 
 interface QuickActionsBarProps {
   plan: ProposalPlan;

@@ -1,4 +1,4 @@
-import React, { createContext, useState, useCallback, useContext, type ReactNode } from 'react';
+import React, { createContext, useState, useCallback, useContext, useRef, type ReactNode } from 'react';
 import {
   type Page,
   type SearchCriteria,
@@ -26,7 +26,7 @@ import { decodeGroupSessionPayload } from '../utils/groupSessionCodec';
 import { findPotentialPlaces } from '../services/googleMapsService';
 import { getEventBasedSearchQueries } from '../services/eventsService';
 import { getWeather } from '../services/weatherService';
-import { enrichItineraryWithRoutes } from '../services/routingService';
+import { enrichItineraryWithRoutes, enrichProposalWithRoutes } from '../services/routingService';
 import {
   type MobilityOption,
   MOBILITY_OPTIONS,
@@ -90,6 +90,7 @@ export interface AppContextType extends AppState {
   handleRetryLastSearch: () => Promise<void>;
   handleSurpriseMe: (locationOverride?: UserLocation) => Promise<void>;
   handleBackToHome: () => void;
+  ensurePlanRoutes: (planIndex: number) => Promise<void>;
   groupDeck: SwipeCardItem[];
   groupDeckCity: string;
   groupLoading: boolean;
@@ -721,7 +722,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [savedPlans]
   );
 
+  const routeGenerationIdRef = useRef<number>(0);
+  const computedPlanRoutesRef = useRef<Set<string>>(new Set());
+
   const openSavedPlan = useCallback((saved: SavedExperience) => {
+    routeGenerationIdRef.current += 1;
+    computedPlanRoutesRef.current.clear();
     setIsSavedPlansModalOpen(false);
     setState((prev) => ({
       ...prev,
@@ -841,11 +847,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           : 'Consultando condiciones meteorológicas de la zona',
       }));
 
+      const generationId = routeGenerationIdRef.current + 1;
+      routeGenerationIdRef.current = generationId;
+      computedPlanRoutesRef.current.clear();
+
       try {
-        // Step 1: Gather real-world context with graceful weather degradation
+        // Step 1: Gather real-world weather first (3s cap) with graceful degradation
         let weather: WeatherInfo | null = null;
         try {
-          weather = await getWeather(targetLocation);
+          weather = await getWeather(targetLocation, 3000);
         } catch (weatherErr) {
           console.warn('Weather query failed, continuing with degraded state:', weatherErr);
           weather = {
@@ -912,7 +922,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           });
         }
 
-        // Step 5: Enrich with routing information
+        // Step 5: Enrich ONLY the opening plan (plan 1) with routing information upfront
         setState((prevState) => ({
           ...prevState,
           loadingMessage: 'Diseñando la ruta perfecta',
@@ -922,9 +932,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const finalItinerary = await enrichItineraryWithRoutes(
           itineraryWithLocations,
           mobilityPreference.googleMode,
-          weather
+          weather,
+          { onlyPrimaryPlan: true }
         );
 
+        computedPlanRoutesRef.current.add(`${generationId}:0`);
         setState((prevState) => ({ ...prevState, itinerary: finalItinerary }));
       } catch (err) {
         console.error(err);
@@ -1115,6 +1127,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
   };
 
+  const ensurePlanRoutes = useCallback(
+    async (planIndex: number) => {
+      const currentItinerary = state.itinerary;
+      if (!currentItinerary || !Array.isArray(currentItinerary.proposals)) return;
+      const targetPlan = currentItinerary.proposals[planIndex];
+      if (!targetPlan || targetPlan.schedule.length < 2) return;
+
+      const alreadyHasRoutes = targetPlan.schedule.slice(1).every((stop) => Boolean(stop.routeInfo));
+      if (alreadyHasRoutes) return;
+
+      const genId = routeGenerationIdRef.current;
+      const cacheKey = `${genId}:${planIndex}`;
+      if (computedPlanRoutesRef.current.has(cacheKey)) return;
+      computedPlanRoutesRef.current.add(cacheKey);
+
+      const mobilityLabel = state.searchCriteria?.mobility || state.formState.mobility?.label;
+      const mobilityPreference =
+        MOBILITY_OPTIONS.find((m) => m.label === mobilityLabel) || MOBILITY_OPTIONS[0];
+
+      try {
+        const enrichedPlan = await enrichProposalWithRoutes(
+          targetPlan,
+          mobilityPreference.googleMode,
+          state.weather,
+          planIndex === 0
+        );
+
+        setState((prev) => {
+          if (!prev.itinerary || routeGenerationIdRef.current !== genId) return prev;
+          const nextProposals = Array.isArray(prev.itinerary.proposals)
+            ? prev.itinerary.proposals.map((p, idx) => (idx === planIndex ? enrichedPlan : p))
+            : prev.itinerary.proposals;
+
+          return {
+            ...prev,
+            itinerary: {
+              ...prev.itinerary,
+              proposals: nextProposals,
+              ...(planIndex === 0
+                ? {
+                    mainPlan: {
+                      ...prev.itinerary.mainPlan,
+                      schedule: enrichedPlan.schedule,
+                    },
+                  }
+                : {}),
+            },
+          };
+        });
+      } catch (err) {
+        console.warn(`Background route calculation skipped for plan ${planIndex}:`, err);
+      }
+    },
+    [state.itinerary, state.searchCriteria, state.formState.mobility, state.weather]
+  );
+
   const value: AppContextType = {
     ...state,
     savedPlans,
@@ -1143,6 +1211,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     handleRetryLastSearch,
     handleSurpriseMe,
     handleBackToHome,
+    ensurePlanRoutes,
     groupDeck,
     groupDeckCity,
     groupLoading,

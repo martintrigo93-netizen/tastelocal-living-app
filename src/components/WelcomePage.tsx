@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { geocodeAddressProxy } from '../services/apiProxy';
 import { requestCurrentLocation } from '../services/geolocationService';
 import { UserLocation } from '../types';
-import SavedPlansModal from './SavedPlansModal';
 import PWAInstallButton from './PWAInstallButton';
+
+const SavedPlansModal = lazy(() => import('./SavedPlansModal'));
 
 const POPULAR_CITIES = [
   { name: 'Madrid', lat: 40.4168, lng: -3.7038 },
@@ -374,10 +375,14 @@ const WelcomePage: React.FC = () => {
       </div>
 
       {/* Saved Plans Modal */}
-      <SavedPlansModal
-        isOpen={isSavedPlansModalOpen}
-        onClose={() => setIsSavedPlansModalOpen(false)}
-      />
+      {isSavedPlansModalOpen && (
+        <Suspense fallback={null}>
+          <SavedPlansModal
+            isOpen={isSavedPlansModalOpen}
+            onClose={() => setIsSavedPlansModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

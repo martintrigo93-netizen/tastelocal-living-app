@@ -1,17 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useAppContext } from '../context/AppContext';
 import LoadingState from './LoadingState';
-import MapComponent, { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
-import DetailPage from './DetailPage';
+import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from '../utils/mapLinks';
 import ResultsPage from './ResultsPage';
-import SavedPlansModal from './SavedPlansModal';
-import SharePlanModal from './SharePlanModal';
 import AudioNarrator from './AudioNarrator';
 import PWAInstallButton from './PWAInstallButton';
 import {
   type ScheduleItem,
   type ProposalPlan,
 } from '../types';
+
+const MapComponent = lazy(() => import('./Map'));
+const DetailPage = lazy(() => import('./DetailPage'));
+const SavedPlansModal = lazy(() => import('./SavedPlansModal'));
+const SharePlanModal = lazy(() => import('./SharePlanModal'));
+
+const MapLoadingFallback: React.FC = () => (
+  <div className="w-full h-full flex flex-col items-center justify-center bg-[#0F1015] text-gray-400">
+    <div className="w-6 h-6 rounded-full border-2 border-[#FF5E2B]/30 border-t-[#FF5E2B] animate-spin mb-2" />
+    <span className="text-[11px]">Cargando mapa...</span>
+  </div>
+);
+
+const DetailLoadingFallback: React.FC = () => (
+  <div className="w-full h-full flex flex-col items-center justify-center bg-[#0F1015] text-gray-400 p-6">
+    <div className="w-7 h-7 rounded-full border-2 border-[#FF5E2B]/30 border-t-[#FF5E2B] animate-spin mb-2.5" />
+    <span className="text-xs">Cargando ficha...</span>
+  </div>
+);
 
 type PageMode = 'proposals' | 'detail' | 'map';
 
@@ -65,10 +81,17 @@ const ItineraryPage: React.FC = () => {
     userTasteProfile,
     setIsPreferencesModalOpen,
     searchCriteria,
+    ensurePlanRoutes,
   } = useAppContext();
   const [selectedPlanIndex, setSelectedPlanIndex] = useState<number>(0);
   const [pageMode, setPageMode] = useState<PageMode>('proposals');
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading && itinerary) {
+      void ensurePlanRoutes(selectedPlanIndex);
+    }
+  }, [selectedPlanIndex, itinerary, isLoading, ensurePlanRoutes]);
 
   if (isLoading) {
     return <LoadingState currentStep={loadingMessage || 'Interpretando tu estado de ánimo...'} />;
@@ -340,7 +363,9 @@ const ItineraryPage: React.FC = () => {
         {/* Full-screen Mobile Map View when triggered explicitly on small viewports */}
         {pageMode === 'map' ? (
           <div className="w-full h-full relative lg:hidden">
-            <MapComponent schedule={activePlan.schedule} />
+            <Suspense fallback={<MapLoadingFallback />}>
+              <MapComponent schedule={activePlan.schedule} />
+            </Suspense>
             <button
               onClick={() => setPageMode('proposals')}
               className="absolute top-4 left-4 z-10 py-2 px-3.5 bg-[#0F1015]/90 border border-white/20 text-white rounded-xl text-xs font-bold shadow-lg backdrop-blur-md flex items-center gap-1.5 cursor-pointer"
@@ -380,22 +405,40 @@ const ItineraryPage: React.FC = () => {
           } w-full lg:w-[54%] xl:w-[50%] h-full overflow-hidden text-left`}
         >
           {pageMode === 'detail' ? (
-            <DetailPage
-              plan={activePlan}
-              weather={weather}
-              onBack={() => setPageMode('proposals')}
-              currentIndex={selectedPlanIndex}
-              totalPlans={proposals.length}
-              onSelectPlanIndex={(idx) => setSelectedPlanIndex(idx)}
-              embeddedInSplitScreen={true}
-            />
+            <Suspense fallback={<DetailLoadingFallback />}>
+              <DetailPage
+                plan={activePlan}
+                weather={weather}
+                onBack={() => setPageMode('proposals')}
+                currentIndex={selectedPlanIndex}
+                totalPlans={proposals.length}
+                onSelectPlanIndex={(idx) => setSelectedPlanIndex(idx)}
+                embeddedInSplitScreen={true}
+              />
+            </Suspense>
           ) : (
             <div className="h-full overflow-y-auto px-4 sm:px-6 md:px-8 py-5 space-y-6 scrollbar-hide">
-              {itinerary.aiFallbackNotice && (
-                <div className="p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 text-xs text-gray-200 flex items-start gap-2.5">
-                  <span className="text-base leading-none mt-0.5">📍</span>
-                  <p className="leading-relaxed">{itinerary.aiFallbackNotice}</p>
+              {itinerary.degraded ? (
+                <div className="p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 text-xs text-gray-200 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base leading-none">📍</span>
+                    <span className="font-semibold">Plan básico sin narrativa completa</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRetryLastSearch}
+                    className="py-1.5 px-3 rounded-xl bg-[#FF5E2B] hover:bg-[#E84D1C] text-white text-[11px] font-bold transition cursor-pointer flex-shrink-0"
+                  >
+                    Reintentar versión completa
+                  </button>
                 </div>
+              ) : (
+                itinerary.aiFallbackNotice && (
+                  <div className="p-3 rounded-2xl bg-[#FF5E2B]/10 border border-[#FF5E2B]/30 text-xs text-gray-200 flex items-start gap-2.5">
+                    <span className="text-base leading-none mt-0.5">📍</span>
+                    <p className="leading-relaxed">{itinerary.aiFallbackNotice}</p>
+                  </div>
+                )
               )}
               {/* MÓDULO DISCOVER: ResultsPage component */}
               <ResultsPage
@@ -427,7 +470,9 @@ const ItineraryPage: React.FC = () => {
 
           {/* Interactive Map Component */}
           <div className="flex-grow w-full relative">
-            <MapComponent schedule={activePlan.schedule} showNavigationButton={false} />
+            <Suspense fallback={<MapLoadingFallback />}>
+              <MapComponent schedule={activePlan.schedule} showNavigationButton={false} />
+            </Suspense>
 
             {/* Floating Bottom Quick Continuous Route Action Bar */}
             <div className="absolute bottom-5 left-5 right-5 z-10 p-3.5 rounded-2xl bg-[#0F1015]/90 backdrop-blur-md border border-white/20 shadow-2xl flex items-center justify-between gap-3">
@@ -466,17 +511,25 @@ const ItineraryPage: React.FC = () => {
       </main>
 
       {/* Modals */}
-      <SavedPlansModal
-        isOpen={isSavedPlansModalOpen}
-        onClose={() => setIsSavedPlansModalOpen(false)}
-      />
+      {isSavedPlansModalOpen && (
+        <Suspense fallback={null}>
+          <SavedPlansModal
+            isOpen={isSavedPlansModalOpen}
+            onClose={() => setIsSavedPlansModalOpen(false)}
+          />
+        </Suspense>
+      )}
 
-      <SharePlanModal
-        plan={activePlan}
-        moodPhrase={activePlan.tagline}
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
-      />
+      {isShareModalOpen && (
+        <Suspense fallback={null}>
+          <SharePlanModal
+            plan={activePlan}
+            moodPhrase={activePlan.tagline}
+            isOpen={isShareModalOpen}
+            onClose={() => setIsShareModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

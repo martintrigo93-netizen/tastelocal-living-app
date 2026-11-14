@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAppContext } from '../context/AppContext';
 import { type SavedExperience } from '../types';
-import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
+import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from '../utils/mapLinks';
 
 interface SavedPlansModalProps {
   isOpen: boolean;

@@ -1,13 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import HomePage from './components/HomePage';
-import ItineraryPage from './components/ItineraryPage';
 import WelcomePage from './components/WelcomePage';
 import ConfigurationErrorPage from './components/ConfigurationErrorPage';
 import ErrorBoundary from './components/ErrorBoundary';
-import PreferencesModal from './components/PreferencesModal';
-import GroupMatchView from './components/GroupMatchView';
 import { AppProvider, useAppContext } from './context/AppContext';
 import { areApiKeysConfigured } from './config';
+
+const ItineraryPage = lazy(() => import('./components/ItineraryPage'));
+const PreferencesModal = lazy(() => import('./components/PreferencesModal'));
+const GroupMatchView = lazy(() => import('./components/GroupMatchView'));
+
+const ViewLoadingFallback: React.FC = () => (
+  <div className="flex flex-col items-center justify-center h-full bg-[#0F1015] text-white p-6">
+    <div className="w-8 h-8 rounded-full border-2 border-[#FF5E2B]/30 border-t-[#FF5E2B] animate-spin mb-3" />
+    <span className="text-xs text-gray-400 font-medium">Cargando vista...</span>
+  </div>
+);
 
 /**
  * Enrutador principal según el marco "FEEL ➔ DISCOVER ➔ EXPERIENCE":
@@ -49,11 +57,15 @@ const AppContent: React.FC = () => {
 
   return (
     <>
-      {renderPage()}
-      <PreferencesModal
-        isOpen={isPreferencesModalOpen}
-        onClose={() => setIsPreferencesModalOpen(false)}
-      />
+      <Suspense fallback={<ViewLoadingFallback />}>{renderPage()}</Suspense>
+      {isPreferencesModalOpen && (
+        <Suspense fallback={null}>
+          <PreferencesModal
+            isOpen={isPreferencesModalOpen}
+            onClose={() => setIsPreferencesModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </>
   );
 };

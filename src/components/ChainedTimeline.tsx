@@ -1,6 +1,6 @@
 import React from 'react';
 import { type ScheduleItem, type UserLocation } from '../types';
-import { getGoogleMapsFullChainedWalkingUrl } from './Map';
+import { getGoogleMapsFullChainedWalkingUrl } from '../utils/mapLinks';
 import { getAmbienceTag } from './ItineraryPage';
 import { useAppContext } from '../context/AppContext';
 

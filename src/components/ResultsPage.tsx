@@ -3,7 +3,7 @@ import { useAppContext } from '../context/AppContext';
 import { type ProposalPlan, type WeatherInfo, type ScheduleItem } from '../types';
 import AudioNarrator from './AudioNarrator';
 import { getAmbienceTag } from './ItineraryPage';
-import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from './Map';
+import { getGoogleMapsDrivingRouteUrl, getGoogleMapsWalkingRouteUrl } from '../utils/mapLinks';
 import QuickActionsBar from './QuickActionsBar';
 import ChainedTimeline from './ChainedTimeline';
 

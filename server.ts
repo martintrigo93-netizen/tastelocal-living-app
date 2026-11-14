@@ -71,6 +71,7 @@ type ApiErrorCode =
   | 'NO_VERIFIED_PLACES_IN_RADIUS'
   | 'MAPS_UNAVAILABLE'
   | 'AI_UNAVAILABLE'
+  | 'GEMINI_TIMEOUT'
   | 'INTERNAL_ERROR';
 
 function sendStructuredError(
@@ -186,7 +187,7 @@ const configuredAllowedOrigins = [
   .filter(Boolean)
   .join(',')
   .split(',')
-  .map((o) => o.trim())
+  .map((o) => o.trim().replace(/\/+$/, ''))
   .filter(Boolean);
 
 const TRUSTED_HOST_SUFFIXES = [
@@ -197,15 +198,45 @@ const TRUSTED_HOST_SUFFIXES = [
   '.netlify.app',
 ];
 
-function isOriginAllowed(origin: string): boolean {
-  try {
-    const parsed = new URL(origin);
-    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+function normalizeHostHeader(req: Request): string {
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const rawHost = typeof forwardedHost === 'string' ? forwardedHost.split(',')[0].trim() : req.get('host') || '';
+  return rawHost.toLowerCase();
+}
 
+function isOriginAllowed(origin: string, req?: Request): boolean {
+  try {
+    const normalizedOrigin = origin.trim().replace(/\/+$/, '');
+    const parsed = new URL(normalizedOrigin);
+    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+
+    // 1. Always permit true same-origin browser requests (browsers attach Origin on POST even when same-origin)
+    if (req) {
+      const requestHost = normalizeHostHeader(req);
+      if (requestHost && parsed.host.toLowerCase() === requestHost) {
+        return true;
+      }
+    }
+
+    // 2. Always permit configured APP_URL origin or AI Studio preview .run.app subdomains (ais-dev-* / ais-pre-*)
+    if (process.env.APP_URL) {
+      try {
+        const appUrlParsed = new URL(process.env.APP_URL);
+        if (parsed.origin === appUrlParsed.origin) return true;
+      } catch {
+        // Ignore malformed APP_URL
+      }
+    }
+    if (/^ais-(dev|pre)-[a-z0-9-]+\.[a-z0-9-]+\.run\.app$/i.test(parsed.hostname)) {
+      return true;
+    }
+
+    // 3. Explicit configured allowlist when provided
     if (configuredAllowedOrigins.length > 0) {
       if (configuredAllowedOrigins.includes('*')) return true;
-      if (configuredAllowedOrigins.includes(origin)) return true;
+      if (configuredAllowedOrigins.includes(normalizedOrigin)) return true;
       if (process.env.NODE_ENV !== 'production' && isLocalhost) return true;
+      if (process.env.NODE_ENV !== 'production' && parsed.hostname.endsWith('.run.app')) return true;
       return false;
     }
 
@@ -227,11 +258,12 @@ app.use((req: Request, res: Response, next) => {
   next();
 });
 
-app.use(
+app.use(express.json());
+app.use('/api', (req: Request, res: Response, next) => {
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (isOriginAllowed(origin)) {
+      if (isOriginAllowed(origin, req)) {
         return callback(null, true);
       }
       return callback(new Error('CORS_ORIGIN_NOT_ALLOWED'));
@@ -239,11 +271,9 @@ app.use(
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-Id'],
-  })
-);
-
-app.use(express.json());
-app.use((err: Error, _req: Request, res: Response, next: (e?: unknown) => void) => {
+  })(req, res, next);
+});
+app.use('/api', (err: Error, _req: Request, res: Response, next: (e?: unknown) => void) => {
   if (err?.message === 'CORS_ORIGIN_NOT_ALLOWED') {
     return sendStructuredError(res, 403, {
       code: 'CORS_FORBIDDEN',
@@ -553,6 +583,14 @@ app.get('/api/place-photo', async (req: Request, res: Response) => {
   }
 });
 
+class GeminiTimeoutError extends Error {
+  readonly code = 'GEMINI_TIMEOUT' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'GeminiTimeoutError';
+  }
+}
+
 async function callGeminiWithResilience(params: {
   contents: string;
   responseSchema?: Record<string, unknown>;
@@ -562,26 +600,63 @@ async function callGeminiWithResilience(params: {
     throw new Error('GEMINI_API_KEY no configurada');
   }
 
-  const models = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
-  let lastError: unknown;
+  const primaryModel = process.env.GEMINI_MODEL_PRIMARY || 'gemini-3.1-flash-lite';
+  const fallbackModel = process.env.GEMINI_MODEL_FALLBACK || 'gemini-3.8-flash';
+  const models = [primaryModel, fallbackModel];
 
-  for (const model of models) {
+  const TOTAL_BUDGET_MS = 25000;
+  const PRIMARY_MAX_MS = 15000;
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
+
+  let lastError: unknown;
+  let sawTimeout = false;
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    const remainingTotalMs = deadline - Date.now();
+    if (remainingTotalMs <= 500) {
+      throw new GeminiTimeoutError('Tiempo máximo de espera agotado para Gemini (25s).');
+    }
+
+    const attemptBudgetMs = i === 0 ? Math.min(PRIMARY_MAX_MS, remainingTotalMs) : remainingTotalMs;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, attemptBudgetMs);
+
     try {
       const response = await ai.models.generateContent({
         model,
         contents: params.contents,
         config: {
+          abortSignal: controller.signal,
           responseMimeType: 'application/json',
           ...(params.responseSchema ? { responseSchema: params.responseSchema as never } : {}),
         },
       });
       return response;
     } catch (err: unknown) {
-      lastError = err;
-      console.warn(`Model ${model} unavailable, failing over to alternative:`, err);
+      const isAbortOrTimeout =
+        timedOut || (err instanceof Error && err.name === 'AbortError');
+      if (isAbortOrTimeout) {
+        sawTimeout = true;
+        lastError = new GeminiTimeoutError(
+          `Timeout esperando respuesta de Gemini (${model}, ${attemptBudgetMs}ms)`
+        );
+      } else {
+        lastError = err;
+      }
+      console.warn(`Model ${model} unavailable, failing over to alternative:`, lastError);
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
+  if (sawTimeout && !(lastError instanceof GeminiTimeoutError)) {
+    throw new GeminiTimeoutError('Se agotó el presupuesto total de tiempo para Gemini.');
+  }
   throw lastError;
 }
 
@@ -768,11 +843,15 @@ async function searchVerifiedPlacesInArea(params: {
         );out center 35;`;
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5500);
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
 
         const opRes = await fetch('https://overpass-api.de/api/interpreter', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'TasteLocalLiving/1.0 (contact: info@tastelocal.app)',
+            Accept: 'application/json',
+          },
           body: `data=${encodeURIComponent(overpassQuery)}`,
           signal: controller.signal,
         }).finally(() => clearTimeout(timeoutId));
@@ -1493,68 +1572,34 @@ Adapta ESTRICTAMENTE la selección de lugares para disfrutar con peques:
 - En "matchReason" y "experienceNarrative" destaca por qué el plan es seguro, entretenido para los peques y sin estrés para los padres.`
       : '';
 
-    // 6. Directiva de Geofencing y Granularidad Local Estricta
+    // 6. Directiva de Geofencing Genérica y Concisa
     const geofencingDirective = isEscapadaMode
-      ? `\n🚗 MODO ESCAPADA / ALREDEDORES ACTIVADO:
-El usuario ha seleccionado explorar los alrededores de ${targetCity}. Se permite extender las propuestas hacia parajes naturales, miradores y pueblos con encanto en el entorno próximo de ${targetCity}.`
-      : `\n📍 DIRECTIVA DE GEOFENCING Y GRANULARIDAD LOCAL ESTRICTA (${targetCity.toUpperCase()} - RADIO MÁXIMO 5 KM):
-- OBLIGACIÓN ESTRICTA: TODAS las propuestas y paradas (gastronomía, cultura, naturaleza, miradores, ocio) DEBEN ubicarse ESTRICTAMENTE dentro de los límites del término municipal de ${targetCity} o a un radio MÁXIMO de 5 km de sus coordenadas (lat: ${userLocation.lat}, lng: ${userLocation.lng}).
-- PROHIBICIÓN RADICAL: Queda TERMINANTEMENTE PROHIBIDO sugerir localidades lejanas, municipios limítrofes o cambiar de término municipal (por ejemplo: si la ciudad es Vigo, queda estrictamente prohibido sugerir Baiona, Cangas, Nigrán, Moaña, Pontevedra o Santiago; el 100% de las paradas debe ser exclusivamente de Vigo).
-- IDENTIDAD Y CULTURA LOCAL AUTÉNTICA: Prioriza el pulso real de los barrios, la agenda cultural local, el comercio de proximidad, patrimonio urbano y locales emblemáticos o independientes de la zona (ej. en Vigo: Casco Vello, Bouzas, O Castro, Teis, O Berbés, Museo MARCO; en Madrid: Malasaña, La Latina, Lavapiés; etc.).
-- TONO DE GUÍA LOCAL EXPERTO: Redacta con el tono de un conocedor local apasionado que sabe cuáles son las mejores calles, rincones y ambientes de barrio, evitando tópicos turísticos masivos o folletos provinciales vacíos.
-- DIRECCIÓN REAL: Cada parada debe indicar en 'placeAddress' su calle y barrio verosímil dentro de ${targetCity}.`;
+      ? `\n- MODO ESCAPADA (${targetCity}): prioriza parajes naturales, miradores y entorno próximo a ${targetCity}.`
+      : `\n- ÁMBITO LOCAL (${targetCity}): prioriza barrios y rincones auténticos propios de ${targetCity}.`;
 
     // 7. Directiva de Geolocalización GPS en Tiempo Real
     const gpsDirective = isGpsActive
-      ? `\n🛰️ GEOLOCALIZACIÓN GPS EN TIEMPO REAL ACTIVA (ENTORNO INMEDIATO):
-- Posición GPS exacta del usuario: Latitud ${userLocation.lat.toFixed(5)}, Longitud ${userLocation.lng.toFixed(5)} ${userLocation.neighborhood ? `(Barrio/Zona: ${userLocation.neighborhood})` : ''}.
-- Radio de búsqueda inmediato: ${searchRadius} km desde esta posición exacta.
-- PROXIMIDAD INMEDIATA OBLIGATORIA: El usuario se encuentra físicamente en estas coordenadas en este momento. Las propuestas deben orientarse de manera prioritaria al ENTORNO INMEDIATO de este punto exacto (barrio, calles adyacentes y plazas a una distancia caminable o dentro del radio de ${searchRadius} km).
-- Mención en la experiencia: Justifica cómo el punto de partida aprovecha la ubicación actual del usuario para empezar la experiencia sin desplazamientos innecesarios.`
+      ? `\n- GPS ACTIVO (${userLocation.lat.toFixed(5)}, ${userLocation.lng.toFixed(5)}${userLocation.neighborhood ? `, ${userLocation.neighborhood}` : ''}): prioriza paradas cercanas al punto de partida.`
       : '';
 
-    // 8. Directiva de Modo de Experiencia: Ruta Encadenada (Multi-Parada) vs Plan Único
+    // 8. Directiva de Modo de Experiencia: Ruta Encadenada vs Plan Único
     const experienceMode = criteria.experienceMode || 'chained';
     const isChainedRoute = experienceMode === 'chained';
     const familyWalkingPaceRule = isFamilyOrKids
-      ? `\n  • RITMO PAUSADO OBLIGATORIO (${criteria.company.toUpperCase()}): Calcula los desplazamientos a paso tranquilo (~3 km/h, distancias muy cortas de 300 a 600 m entre paradas, sin cuestas exigentes). En "walkingTimeFromPrevious" de las paradas 2 y 3, refleja este paso relajado (ej. "10 min caminando (ritmo pausado)" o "12 min caminando (ritmo pausado)", manteniendo SIEMPRE ≤ 15 min reales).`
+      ? ` Ritmo pausado (~3 km/h, tramos cortos sin cuestas exigentes, indica "(ritmo pausado)" en walkingTimeFromPrevious).`
       : '';
 
     const chainedRouteDirective = isChainedRoute
-      ? `\n🔗 MODO RUTA ENCADENADA (2-3 PARADAS COHERENTES) ACTIVADO:
-- REGLA ESTRICTA DE SECUENCIA Y PROXIMIDAD PEATONAL:
-  • Cada uno de los 3 planes DEBE componerse de EXACTAMENTE 3 paradas cronológicas conectadas entre sí a pie (Parada 1 -> Parada 2 -> Parada 3).
-  • Las 3 paradas deben estar situadas en el MISMO BARRIO o zona contigua, a MENOS DE 15 MINUTOS caminando entre una y otra (distancia peatonal máxima de 1 km entre paradas contiguas).${familyWalkingPaceRule}
-  • En cada parada del array 'schedule' DEBES incluir obligatoriamente:
-    - "order": 1 para la primera parada, 2 para la segunda parada, 3 para la tercera parada.
-    - "time": Franja horaria sugerida secuencial y en orden ascendente (ej. "18:00 - Café / Aperitivo", "19:15 - Cultura / Paseo", "21:00 - Cena local").
-    - "activity": Nombre evocador de la actividad o momento (ej. "Aperitivo y Café de Especialidad", "Paseo Cultural o Galería", "Cena y Sobremesa Local").
-    - "walkingTimeFromPrevious": Tiempo estimado caminando desde la parada anterior:
-      * Para la Parada 1: "Punto de inicio" (o "Inicio de ruta").
-      * Para la Parada 2: Tiempo a pie desde la Parada 1 (${isFamilyOrKids ? 'ej. "10 min caminando (ritmo pausado)"' : 'ej. "8 min caminando"'}, NUNCA más de 15 min).
-      * Para la Parada 3: Tiempo a pie desde la Parada 2 (${isFamilyOrKids ? 'ej. "12 min caminando (ritmo pausado)"' : 'ej. "10 min caminando"'}, NUNCA más de 15 min).
-    - "placeName", "placeAddress": Nombres reales y calles verosímiles en ${targetCity}.`
-      : `\n🎯 MODO PLAN ÚNICO (RECOMENDACIÓN INDIVIDUAL) ACTIVADO:
-- El usuario prefiere 1 recomendación individual focalizada y memorable en ${targetCity} (1 sola parada principal) para disfrutar a su propio ritmo sin desplazamientos continuos.${isFamilyOrKids ? ` Debe ser un espacio especialmente cómodo, seguro y de acceso sencillo adaptado a "${criteria.company}".` : ''}
-- Para esa parada, incluye "order": 1 y "walkingTimeFromPrevious": "Punto de inicio".`;
+      ? `\n- RUTA ENCADENADA: cada plan debe tener exactamente 3 paradas secuenciales conectadas a pie (<= 15 min entre paradas contiguas).${familyWalkingPaceRule} En "schedule": "order" (1,2,3), "time" ascendente desde ${timeStr}, "activity", "walkingTimeFromPrevious" ("Punto de inicio" en parada 1).`
+      : `\n- PLAN ÚNICO: 1 parada principal en ${targetCity} ("order": 1, "walkingTimeFromPrevious": "Punto de inicio").`;
 
     // 9. Directiva de Filtro "Solo Abiertos Ahora"
     const onlyOpenNow = Boolean(criteria.onlyOpenNow || req.body.onlyOpenNow);
     const openNowDirective = onlyOpenNow
-      ? `\n🕒 FILTRO "SOLO ABIERTOS AHORA" ACTIVADO:
-El usuario exige ESTRICTAMENTE establecimientos abiertos en este preciso instante (${timeStr}).
-- Queda TERMINANTEMENTE PROHIBIDO proponer locales o espacios con horario cerrado en este momento o día de la semana.
-- Toda parada debe estar plenamente operativa y accesible en la franja actual de ${timePeriodName} (${timeStr}).`
+      ? `\n- SOLO ABIERTOS AHORA (${timeStr}): prioriza lugares operativos en la franja ${timePeriodName}.`
       : '';
 
-    // 10. Directiva de Exclusión Inteligente ("Ya estuve aquí")
-    const visitedExclusionDirective =
-      visitedNamesList.length > 0
-        ? `\n🚫 EXCLUSIÓN INTELIGENTE ("YA ESTUVE AQUÍ") — PRIORIDAD MÁXIMA:
-El usuario ya ha visitado y marcado los siguientes establecimientos o lugares:
-${visitedNamesList.map((n) => `- "${n}"`).join('\n')}
-REGLA INQUEBRANTABLE: Queda TERMINANTEMENTE PROHIBIDO incluir cualquiera de estos lugares en las 3 propuestas o paradas. Prioriza descubrir rincones nuevos, alternativos y frescos dentro de ${targetCity}.`
-        : '';
+    // 10. Exclusión inteligente ("Ya estuve aquí") ya filtrada en código sobre effectivePlacesPool y sanitizeSchedule
 
     // 11. Directiva de Perfil Dinámico de Gustos y Restricciones Manuales (Memoria Silenciosa)
     const userTasteProfile = req.body?.userTasteProfile || criteria.userTasteProfile;
@@ -1583,71 +1628,33 @@ REGLA INQUEBRANTABLE: Queda TERMINANTEMENTE PROHIBIDO incluir cualquiera de esto
       }
 
       if (profileLines.length > 0) {
-        tasteProfileDirective = `\n🎛️ PERFIL DE GUSTOS Y MEMORIA SILENCIOSA DEL USUARIO:
-${profileLines.join('\n')}
-INSTRUCCIÓN OBLIGATORIA: Adapta las propuestas para respetar escrupulosamente estas preferencias y restricciones (ej. si incluye "Opciones sin gluten" sugiere locales con oferta apta; si incluye "Evitar multitudes" prioriza rincones tranquilos y locales íntimos; si incluye "Pet-friendly" prioriza terrazas o espacios con admisión de mascotas).`;
+        tasteProfileDirective = `\n🎛️ PERFIL DE GUSTOS DEL USUARIO:\n${profileLines.join('\n')}`;
       }
     }
 
-    const prompt = `Eres un diseñador de experiencias locales y concierge urbano de primer nivel para la app "TasteLocal Living", especializado con conocimiento íntimo en el municipio de "${targetCity}".
-Tu función es actuar como motor narrativo y curador hiperlocal de experiencias en "${targetCity}".
-
-DESTINO Y GEOFENCING:
-- Municipio: ${targetCity}
-- Coordenadas de referencia: Lat ${userLocation.lat}, Lng ${userLocation.lng} ${userLocation.isGps ? '(Señal GPS en tiempo real confirmada)' : ''}
-${geofencingDirective}
-${gpsDirective}
-
-PERFIL DEL USUARIO:
-- Estado de ánimo: ${criteria.user_mood}
-${criteria.user_mood_description ? `- Notas adicionales: "${criteria.user_mood_description}"` : ''}
-- Entorno preferido: ${criteria.environment}
-- Tiempo disponible: ${criteria.availableTime || '2-4h'} ${criteria.availableTime === '< 2h' ? '(EXPERIENCIA EXPRÉS: Máximo 2 paradas cercanas y ágiles)' : criteria.availableTime === 'Día completo' ? '(INMERSIÓN COMPLETA: 3 a 4 paradas con ritmo holgado y tiempo de disfrute)' : '(Ruta equilibrada de 2 a 3 paradas)'}
-- Compañía: ${criteria.company} ${criteria.company === 'Con mascota' ? '(ATENCIÓN CRÍTICA: Prioriza espacios al aire libre, parques y locales/terrazas pet-friendly aptos para disfrutar con mascota)' : isFamilyGroup ? '(EN FAMILIA: Grupos multigeneracionales; prioriza restaurantes amplios, paseos llanos accesibles y facilidad de acceso)' : isWithKids ? '(CON NIÑOS: Prioriza parques con juegos, terrazas peatonalizadas, cafés family-friendly y ritmo pausado; evita locales nocturnos o bares de copas)' : ''}
-- Presupuesto deseado: ${criteria.budget || 'Equilibrado / Normal'}
-- Movilidad: ${criteria.mobility}
-- Nivel de energía (1-10): ${criteria.intensity}
-
-HORA Y CONTEXTO DEL DÍA:
-- Hora local: ${timeStr} (${timePeriodName})
-- Orientación de actividades para esta franja: ${timeGuidance}
-- IMPORTANTE: Las paradas de cada plan deben programarse a partir de las ${timeStr} en orden cronológico ascendente (ej. si son las 18:00, la primera parada debe ser hacia las 18:30, la segunda a las 20:00, etc.).
-
-CONTEXTO METEOROLÓGICO EN ${targetCity.toUpperCase()}:
-- Estado del tiempo: ${
+    const prompt = `Eres curador local de experiencias para "TasteLocal Living" en "${targetCity}".
+CONTEXTO:
+- Ciudad: ${targetCity} (${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}) • Hora: ${timeStr} (${timePeriodName}: ${timeGuidance})
+- Estado de ánimo: ${criteria.user_mood}${criteria.user_mood_description ? ` ("${criteria.user_mood_description}")` : ''}
+- Entorno: ${criteria.environment} • Tiempo disponible: ${criteria.availableTime || '2-4h'} • Compañía: ${criteria.company}
+- Presupuesto: ${criteria.budget || 'Equilibrado / Normal'} • Movilidad: ${criteria.mobility} • Energía: ${criteria.intensity}/10
+- Clima: ${
       weather?.isAvailable === false || weather?.alertLevel === 'unavailable'
-        ? 'No disponible (diseña propuestas versátiles)'
-        : `${weather?.temp ?? 'N/D'}°C, ${weather?.condition || 'Agradable'} - ${weather?.summary || ''}`
-    }
-${weatherDirective}
-${userAffinitiesDirective}
-${tasteProfileDirective}
-${visitedExclusionDirective}
-${surpriseMeDirective}
-${petDirective}
-${companyDirective}
-${chainedRouteDirective}
-${openNowDirective}
+        ? 'No disponible (propuestas versátiles)'
+        : `${weather?.temp ?? 'N/D'}°C, ${weather?.condition || 'Agradable'} (${weather?.summary || ''})`
+    }${geofencingDirective}${gpsDirective}${chainedRouteDirective}${openNowDirective}${weatherDirective}${userAffinitiesDirective}${tasteProfileDirective}${surpriseMeDirective}${petDirective}${companyDirective}
 
-LUGARES REALES Y VERIFICADOS DISPONIBLES EN ${targetCity.toUpperCase()}:
+LUGARES REALES Y VERIFICADOS EN ${targetCity.toUpperCase()}:
 ${availablePlacesDescription}
 
-MISIÓN OBLIGATORIA: Generar TRES propuestas realmente diferenciadas en ${targetCity} dentro del radio de 5 km:
-1. PLAN IDEAL -> La propuesta con encaje directo más fiel a la emoción, el modo de experiencia (${experienceMode}) y nivel de energía en ${targetCity}.
-2. PLAN ALTERNATIVO -> Misma emoción de partida pero con un enfoque distinto en la misma zona (ej. exterior/naturaleza vs. cultural/acogedor o gastronómico).
-3. PLAN SORPRESA -> Una propuesta singular, inesperada pero realizable y segura, que rompe la rutina en ${targetCity}.
+GENERA 3 PROPUESTAS DIFERENCIADAS EN JSON:
+1. "badge": "PLAN IDEAL" (encaje directo con emoción, tiempo y compañía)
+2. "badge": "PLAN ALTERNATIVO" (misma emoción, enfoque distinto)
+3. "badge": "PLAN SORPRESA" (propuesta singular pero realizable)
 
-NORMAS ESTRICTAS:
-- Para cada uno de los 3 planes, incluye:
-  • "badge": "PLAN IDEAL" (para el 1), "PLAN ALTERNATIVO" (para el 2) o "PLAN SORPRESA" (para el 3).
-  • "matchReason": "Por qué conecta con cómo te sientes hoy" redactado en 2 frases inspiradoras que justifiquen el vínculo con la emoción.
-  • "experienceNarrative": "Qué vas a vivir y por qué merece la pena", redactando una descripción inmersiva y sensorial (3 a 5 líneas) de la atmósfera de los lugares seleccionados en ${targetCity}.
-  • "accessibilityInfo": Breve indicación de accesibilidad física (ej. "Ruta peatonal llana y accesible", "Espacios con accesibilidad comprobada").
-  • "budgetEstimate": Presupuesto orientativo (ej. "20€ - 35€ / persona", "15€ - 25€ / persona", o "Consumo moderado").
-  • "energyRequired": Nivel de energía requerido (ej. "Ritmo pausado (3/10)", "Moderado (6/10)", o "Vigoroso (8/10)").
-  • "approxDuration": Duración acorde al tiempo disponible (ej. "${criteria.availableTime || '2-4h'}").
-- Cada parada debe incluir su "order" (1, 2, 3), su franja horaria sugerida "time", y "walkingTimeFromPrevious" (tiempo a pie ≤ 15 min desde la parada anterior).
-- REGLA INQUEBRANTABLE DE VERIFICACIÓN: DEBES elegir ÚNICAMENTE lugares incluidos en "LUGARES REALES Y VERIFICADOS" utilizando EXACTAMENTE su "placeId" (el ID entre [ID: "..."]), "placeName" y "placeAddress". QUEDA TERMINANTEMENTE PROHIBIDO inventar lugares, nombres, coordenadas, horarios o valoraciones no presentes en esa lista.`;
+REQUISITOS DE FORMATO Y VERIFICACIÓN:
+- Incluye en cada plan: id, badge, tagline, title, shortDescription, matchReason (2 frases conectando con la emoción), experienceNarrative (3-5 líneas sensoriales), accessibilityInfo, budgetEstimate, energyRequired, approxDuration ("${criteria.availableTime || '2-4h'}"), y schedule.
+- REGLA INQUEBRANTABLE: Elige ÚNICAMENTE lugares de "LUGARES REALES Y VERIFICADOS" usando EXACTAMENTE su "placeId" ([ID: "..."]), "placeName" y "placeAddress". Prohibido inventar lugares, coordenadas, horarios o valoraciones.`;
 
     const response = await callGeminiWithResilience({
       contents: prompt,
@@ -1922,6 +1929,11 @@ NORMAS ESTRICTAS:
 
     return res.json(parsed);
   } catch (error) {
+    const isGeminiTimeout =
+      error instanceof GeminiTimeoutError ||
+      (error as { code?: string })?.code === 'GEMINI_TIMEOUT' ||
+      (error instanceof Error && error.name === 'AbortError');
+
     console.warn('Error generating itinerary with Gemini, falling back strictly to verified places:', error);
     const verifiedFallback = buildVerifiedFallbackItinerary({
       verifiedPlaces: effectivePoolForFallback,
@@ -1932,7 +1944,19 @@ NORMAS ESTRICTAS:
     });
 
     if (verifiedFallback) {
-      return res.status(200).json(verifiedFallback);
+      return res.status(200).json({
+        ...verifiedFallback,
+        degraded: true,
+        fallbackReason: isGeminiTimeout ? 'GEMINI_TIMEOUT' : 'AI_UNAVAILABLE',
+      });
+    }
+
+    if (isGeminiTimeout) {
+      return sendStructuredError(res, 504, {
+        code: 'GEMINI_TIMEOUT',
+        message: 'La generación narrativa con IA superó el tiempo máximo permitido y no hay lugares verificados disponibles para construir el plan.',
+        retryable: true,
+      });
     }
 
     const canExpand = fallbackRadiusKm < 15;
@@ -2786,6 +2810,7 @@ async function startServer() {
       server: {
         middlewareMode: true,
         hmr: false,
+        allowedHosts: true,
       },
       appType: 'spa',
     });

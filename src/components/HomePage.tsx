@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, lazy, Suspense } from 'react';
 import { type Mood, type SearchCriteria, type Entorno } from '../types';
 import {
   COMPANY_OPTIONS,
@@ -11,8 +11,9 @@ import {
 } from '../constants';
 import { analyzeMoodFromText } from '../services/geminiService';
 import { useAppContext } from '../context/AppContext';
-import SavedPlansModal from './SavedPlansModal';
 import GpsLocationWidget from './GpsLocationWidget';
+
+const SavedPlansModal = lazy(() => import('./SavedPlansModal'));
 
 interface NaturalMoodOption extends Mood {
   phrase: string;
@@ -924,10 +925,14 @@ const HomePage: React.FC = () => {
       </footer>
 
       {/* Modal de Experiencias Guardadas */}
-      <SavedPlansModal
-        isOpen={isSavedPlansModalOpen}
-        onClose={() => setIsSavedPlansModalOpen(false)}
-      />
+      {isSavedPlansModalOpen && (
+        <Suspense fallback={null}>
+          <SavedPlansModal
+            isOpen={isSavedPlansModalOpen}
+            onClose={() => setIsSavedPlansModalOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

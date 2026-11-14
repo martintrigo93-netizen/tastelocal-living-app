@@ -11,7 +11,45 @@ import {
   StructuredApiError,
 } from '../types';
 
-const BASE_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+function getBaseApiUrl(): string {
+  const configured = (import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
+  if (!configured) return '';
+
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const isUnifiedPreviewOrLocal =
+      import.meta.env.DEV ||
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.endsWith('.run.app');
+
+    // In dev / AI Studio / Cloud Run unified full-stack runtime, server.ts serves both frontend and /api/* on the same origin.
+    if (isUnifiedPreviewOrLocal && configured !== window.location.origin) {
+      return '';
+    }
+  }
+
+  return configured;
+}
+
+const BASE_API_URL = getBaseApiUrl();
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 15000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export class ApiClientError extends Error {
   code: string;
@@ -94,11 +132,15 @@ async function parseApiError(res: Response, fallbackMessage: string): Promise<Ap
 
 export async function geocodeAddressProxy(query: string): Promise<UserLocation | null> {
   try {
-    const res = await fetch(`${BASE_API_URL}/api/places/geocode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-    });
+    const res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/places/geocode`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query }),
+      },
+      10000
+    );
     if (!res.ok) {
       throw await parseApiError(res, 'No pudimos encontrar esa ubicación. Revisa el nombre e inténtalo de nuevo.');
     }
@@ -122,11 +164,15 @@ export async function reverseGeocodeProxy(lat: number, lng: number): Promise<{
   location: UserLocation;
 }> {
   try {
-    const res = await fetch(`${BASE_API_URL}/api/geocode/reverse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat, lng }),
-    });
+    const res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/geocode/reverse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, lng }),
+      },
+      7000
+    );
     if (res.ok) {
       return await res.json();
     }
@@ -142,11 +188,25 @@ export async function reverseGeocodeProxy(lat: number, lng: number): Promise<{
 }
 
 export async function analyzeMoodProxy(text: string): Promise<Mood> {
-  const res = await fetch(`${BASE_API_URL}/api/gemini/analyze-mood`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/gemini/analyze-mood`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      },
+      18000
+    );
+  } catch {
+    throw new ApiClientError({
+      code: 'NETWORK_ERROR',
+      message: 'No pudimos conectar para interpretar tu estado de ánimo. Inténtalo de nuevo.',
+      status: 503,
+      retryable: true,
+    });
+  }
   if (!res.ok) {
     throw await parseApiError(res, 'No pudimos interpretar tu estado de ánimo en este momento.');
   }
@@ -189,16 +249,23 @@ export async function generateItineraryProxy(payload: {
 
   let res: Response;
   try {
-    res = await fetch(`${BASE_API_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fullPayload),
-    });
-  } catch {
+    res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/generate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fullPayload),
+      },
+      35000
+    );
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === 'AbortError';
     throw new ApiClientError({
       code: 'NETWORK_ERROR',
-      message: 'No pudimos conectar con el servidor para crear tu plan. Comprueba tu conexión e inténtalo de nuevo.',
-      status: 0,
+      message: isTimeout
+        ? 'La generación del itinerario tardó más de lo esperado. Por favor, inténtalo de nuevo.'
+        : 'No pudimos conectar con el servidor para crear tu plan. Comprueba tu conexión e inténtalo de nuevo.',
+      status: isTimeout ? 504 : 0,
       retryable: true,
     });
   }
@@ -220,15 +287,22 @@ export async function searchPlacesProxy(
 ): Promise<Plan[]> {
   let res: Response;
   try {
-    res = await fetch(`${BASE_API_URL}/api/places/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, location, searchRadiusKm }),
-    });
-  } catch {
+    res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/places/search`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, location, searchRadiusKm }),
+      },
+      14000
+    );
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === 'AbortError';
     throw new ApiClientError({
       code: 'MAPS_UNAVAILABLE',
-      message: 'No pudimos conectar con el servicio de mapas y lugares reales.',
+      message: isTimeout
+        ? 'El servicio de búsqueda de lugares tardó demasiado en responder. Inténtalo de nuevo.'
+        : 'No pudimos conectar con el servicio de mapas y lugares reales.',
       status: 503,
       retryable: true,
     });
@@ -245,13 +319,20 @@ export async function searchPlacesProxy(
   return Array.isArray(data.places) ? data.places : [];
 }
 
-export async function getWeatherProxy(location: UserLocation): Promise<WeatherInfo> {
+export async function getWeatherProxy(
+  location: UserLocation,
+  timeoutMs = 3000
+): Promise<WeatherInfo> {
   try {
-    const res = await fetch(`${BASE_API_URL}/api/weather`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ location }),
-    });
+    const res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/weather`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location }),
+      },
+      timeoutMs
+    );
     if (res.ok) {
       return (await res.json()) as WeatherInfo;
     }
@@ -277,11 +358,15 @@ export async function computeRouteProxy(
 ): Promise<RouteInfo> {
   let res: Response;
   try {
-    res = await fetch(`${BASE_API_URL}/api/routes/compute`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ origin, destination, travelMode }),
-    });
+    res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/routes/compute`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin, destination, travelMode }),
+      },
+      8000
+    );
   } catch {
     throw new ApiClientError({
       code: 'MAPS_UNAVAILABLE',
@@ -314,17 +399,21 @@ export async function generateGroupDeckProxy(params: {
 }): Promise<{ deck: SwipeCardItem[]; cityName: string }> {
   let res: Response;
   try {
-    res = await fetch(`${BASE_API_URL}/api/group/deck`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...params,
-        latitude: params.location.lat,
-        longitude: params.location.lng,
-        searchRadiusKm: params.searchRadiusKm ?? (params.environment === 'Escapada' ? 15 : 5),
-        cityName: params.cityName || params.location.cityName,
-      }),
-    });
+    res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/group/deck`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...params,
+          latitude: params.location.lat,
+          longitude: params.location.lng,
+          searchRadiusKm: params.searchRadiusKm ?? (params.environment === 'Escapada' ? 15 : 5),
+          cityName: params.cityName || params.location.cityName,
+        }),
+      },
+      25000
+    );
   } catch {
     throw new ApiClientError({
       code: 'NETWORK_ERROR',
@@ -344,11 +433,15 @@ export async function generateGroupDeckProxy(params: {
 
 export async function createGroupSessionProxy(session: GroupSwipeSession): Promise<{ sessionId: string }> {
   try {
-    const res = await fetch(`${BASE_API_URL}/api/group/session`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(session),
-    });
+    const res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/group/session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(session),
+      },
+      8000
+    );
     if (res.ok) {
       return (await res.json()) as { sessionId: string };
     }
@@ -360,7 +453,11 @@ export async function createGroupSessionProxy(session: GroupSwipeSession): Promi
 
 export async function getGroupSessionProxy(sessionId: string): Promise<GroupSwipeSession | null> {
   try {
-    const res = await fetch(`${BASE_API_URL}/api/group/session/${encodeURIComponent(sessionId)}`);
+    const res = await fetchWithTimeout(
+      `${BASE_API_URL}/api/group/session/${encodeURIComponent(sessionId)}`,
+      {},
+      8000
+    );
     if (res.ok) {
       const data = (await res.json()) as { session?: GroupSwipeSession };
       return data.session || null;

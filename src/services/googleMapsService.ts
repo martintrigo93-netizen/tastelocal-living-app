@@ -42,22 +42,42 @@ export async function findPotentialPlaces(
     }
   };
 
-  for (const query of eventQueries.slice(0, 3)) {
+  const runQuery = async (query: string): Promise<ApiClientError | null> => {
     try {
       const results = await searchPlacesProxy(query, criteria.location, radiusKm);
       successfulSearches += 1;
       addVerifiedPlaces(results);
-      if (allPlaces.length >= 10) break;
+      return null;
     } catch (err) {
       if (err instanceof ApiClientError) {
         lastFatalError = err;
-        // Stop immediately on rate limit so we never trigger a retry storm
-        if (err.code === 'RATE_LIMITED') {
-          throw err;
-        }
+        console.warn(`Error searching places for query "${query}":`, err);
+        return err;
       }
       console.warn(`Error searching places for query "${query}":`, err);
+      return null;
     }
+  };
+
+  // Run primary search queries in parallel via Promise.allSettled so one failure never blocks the rest
+  const parallelQueries = eventQueries.slice(0, 3);
+  const settledResults =
+    parallelQueries.length > 0
+      ? await Promise.allSettled(parallelQueries.map((q) => runQuery(q)))
+      : [];
+
+  const firstApiError = settledResults
+    .map((r) => (r.status === 'fulfilled' ? r.value : null))
+    .find((err): err is ApiClientError => err !== null) ?? lastFatalError;
+
+  if (
+    allPlaces.length === 0 &&
+    successfulSearches === 0 &&
+    firstApiError &&
+    (firstApiError.code === 'RATE_LIMITED' ||
+      (!firstApiError.retryable && firstApiError.status >= 400 && firstApiError.status < 500))
+  ) {
+    throw firstApiError;
   }
 
   // Fallback contextual query if fewer than 3 real places were gathered and service is responsive
@@ -73,7 +93,9 @@ export async function findPotentialPlaces(
     } catch (err) {
       if (err instanceof ApiClientError) {
         lastFatalError = err;
-        if (err.code === 'RATE_LIMITED') throw err;
+        if (err.code === 'RATE_LIMITED' || (!err.retryable && err.status >= 400 && err.status < 500)) {
+          throw err;
+        }
       }
       console.warn('Fallback search error:', err);
     }

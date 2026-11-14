@@ -228,6 +228,8 @@ export interface GeneratedItinerary {
   isPlanBActive?: boolean;
   planBReason?: string;
   aiFallbackNotice?: string;
+  degraded?: boolean;
+  fallbackReason?: string;
 }
 
 export interface StructuredApiError {
